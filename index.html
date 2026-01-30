@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<title>Emerald Team Builder — Score Calculator</title>
+		<style>
+			:root{--accent:#2b6cb0;--muted:#666}
+			body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;background:#f6f8fb;color:#111}
+			header{background:var(--accent);color:white;padding:12px 20px}
+			.container{display:grid;grid-template-columns:320px 1fr 360px;gap:16px;padding:16px}
+			.panel{background:white;border-radius:8px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+			.team-list{display:flex;flex-direction:column;gap:8px}
+			.scoreboard{overflow:auto}
+			table{width:100%;border-collapse:collapse}
+			th,td{padding:8px;border-bottom:1px solid #eee;text-align:left}
+			th{background:#fafafa;position:sticky;top:0}
+			.controls label{display:block;margin-bottom:6px;font-size:13px;color:var(--muted)}
+			.muted{color:var(--muted);font-size:13px}
+		</style>
+	</head>
+	<body>
+		<header>
+			<h1 style="margin:0;font-size:18px">Emerald Team Builder — Score Calculator</h1>
+		</header>
+
+		<main class="container">
+			<aside class="panel">
+				<h2 style="margin-top:0;font-size:16px">Team</h2>
+				<div class="team-list" id="teamList">
+					<div class="muted">Add Pokémon to build your team (placeholder)</div>
+				</div>
+				<hr />
+				<div class="controls">
+					<label>Assumptions</label>
+					<label><input type="checkbox" id="assumeNuzlocke" checked /> Hardcore Nuzlocke defaults</label>
+					<label><input type="checkbox" id="allowCrits" /> Crits enabled</label>
+					<label><input type="checkbox" id="allowSetup" /> Allow setup moves</label>
+				</div>
+			</aside>
+
+			<section class="panel">
+				<h2 style="margin-top:0;font-size:16px">Trainers & Team Builder</h2>
+				<div id="trainersContainer"></div>
+			</section>
+
+			<aside class="panel">
+				<h2 style="margin-top:0;font-size:16px">Fight Details</h2>
+				<div id="fightDetails" class="muted">Select a fight or matchup to view details.</div>
+			</aside>
+		</main>
+
+		<script type="module" src="src/main.js"></script>
+	</body>
+</html>

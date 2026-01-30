@@ -1,0 +1,28 @@
+{
+    "id": "roxanne_1",
+    "name": "Roxanne",
+    "source": "src/data/raw/gym_leaders.h",
+    "pokemons": [
+        {
+            "species": "geodude",
+            "level": 12,
+            "iv": 100,
+            "heldItem": null,
+            "moves": ["tackle", "defense-curl", "rock-throw", "rock-tomb"]
+        },
+        {
+            "species": "geodude",
+            "level": 12,
+            "iv": 100,
+            "heldItem": null,
+            "moves": ["tackle", "defense-curl", "rock-throw", "rock-tomb"]
+        },
+        {
+            "species": "nosepass",
+            "level": 15,
+            "iv": 200,
+            "heldItem": "oran-berry",
+            "moves": ["block", "harden", "tackle", "rock-tomb"]
+        }
+    ]
+}

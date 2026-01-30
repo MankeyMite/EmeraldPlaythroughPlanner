@@ -1,0 +1,5 @@
+{
+    "files.associations": {
+        "**/src/data/raw/*.h": "c"
+    }
+}
