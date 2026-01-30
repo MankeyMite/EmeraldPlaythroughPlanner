@@ -17,3 +17,5 @@ Next steps:
 
 
 find natures for each trainer's pokemon by finding the trainer characteristics. 
+
+testing testing
