@@ -2,6 +2,17 @@ import { normalizeTrainerIVs, loadTrainer } from './lib/trainerLoader.js';
 import { SPECIES_NATIONAL } from './lib/PokémonNationalDexNr.js';
 import { calcAllStatsGen3 } from './stat calculation.js';
 
+// App version / cache-buster. In production you can replace this with a fixed
+// release string. Using a changing value here forces fresh fetches so users
+// don't see stale header/data files when the app is updated.
+const APP_VERSION = String(Date.now());
+
+function fetchNoCache(path){
+  const sep = path.includes('?') ? '&' : '?';
+  const url = path + sep + 'v=' + APP_VERSION;
+  try{ return fetch(url, { cache: 'no-store' }); }catch(e){ return fetch(url); }
+}
+
 // build a quick lookup map from normalized species name -> national dex number
 const SPECIES_MAP = new Map();
 for (const [num, name] of SPECIES_NATIONAL){
@@ -13,6 +24,14 @@ function normalizeNameForLookup(s){
   if (!s) return '';
   return s.toLowerCase().replace(/[^a-z0-9]/g,'');
 }
+
+// In-memory planned-team storage (do not persist by default)
+window.__emerald_planned_team = window.__emerald_planned_team || [];
+window.__emerald_planned_team_natures = window.__emerald_planned_team_natures || [];
+window.__emerald_planned_team_genders = window.__emerald_planned_team_genders || [];
+function getPlannedTeam(){ return window.__emerald_planned_team || []; }
+function getPlannedNatures(){ return window.__emerald_planned_team_natures || []; }
+function getPlannedGenders(){ return window.__emerald_planned_team_genders || []; }
 
 function getSpriteNumberForSpeciesName(speciesName){
   const key = normalizeNameForLookup(speciesName);
@@ -34,7 +53,7 @@ async function loadSpeciesInfoH(){
   if (_speciesInfoMap) return _speciesInfoMap;
   _speciesInfoMap = {};
   try{
-    const res = await fetch('src/data/raw/species_info.h');
+    const res = await fetchNoCache('src/data/raw/species_info.h');
     if (!res.ok) return _speciesInfoMap;
     const text = await res.text();
     // match blocks like: [SPECIES_NAME] = { ... },
@@ -266,7 +285,7 @@ function renderStatBars(container, stats){
 }
 
 async function loadTrainers(){
-  const res = await fetch(TRAINERS_JSON);
+  const res = await fetchNoCache(TRAINERS_JSON);
   if (!res.ok) throw new Error('Failed loading trainers');
   return await res.json();
 }
@@ -278,7 +297,7 @@ async function loadSpeciesIndex(){
   if (_speciesIndex) return _speciesIndex;
   _speciesIndex = new Set();
   try{
-    const res = await fetch('src/lib/speciesIndex.json');
+    const res = await fetchNoCache('src/lib/speciesIndex.json');
     if (!res.ok) return _speciesIndex;
     const arr = await res.json();
     for (const a of arr) _speciesIndex.add(a);
@@ -295,7 +314,7 @@ async function loadSpeciesData(id){
   }
   const path = `src/data/pokemon/${id}.json`;
   try{
-    const res = await fetch(path);
+    const res = await fetchNoCache(path);
     if (!res.ok) throw new Error('no');
     const data = await res.json();
     speciesCache.set(id, data);
@@ -312,7 +331,7 @@ async function loadLevelUpLearnsetsH(){
   if (_levelUpLearnsets) return _levelUpLearnsets;
   _levelUpLearnsets = {};
   try{
-    const res = await fetch('src/data/raw/level_up_learnsets.h');
+    const res = await fetchNoCache('src/data/raw/level_up_learnsets.h');
     if (!res.ok) return _levelUpLearnsets;
     const text = await res.text();
     const re = /static\s+const\s+u16\s+s([A-Za-z0-9_]+)LevelUpLearnset\s*\[\]\s*=\s*\{([\s\S]*?)\n\s*\};/g;
@@ -339,7 +358,7 @@ async function loadTMHMLearnsetsH(){
   if (_tmhmLearnsets) return _tmhmLearnsets;
   _tmhmLearnsets = {};
   try{
-    const res = await fetch('src/data/raw/tmhm_learnsets.h');
+    const res = await fetchNoCache('src/data/raw/tmhm_learnsets.h');
     if (!res.ok) return _tmhmLearnsets;
     const text = await res.text();
     const re = /\[\s*(SPECIES_[A-Z0-9_]+)\s*\]\s*=\s*\{\s*\.learnset\s*=\s*\{([\s\S]*?)\}\s*\}/g;
@@ -359,7 +378,7 @@ async function loadEvolutionsH(){
   if (_evolutionTable) return _evolutionTable;
   _evolutionTable = {};
   try{
-    const res = await fetch('src/data/raw/evolution.h');
+    const res = await fetchNoCache('src/data/raw/evolution.h');
     if (!res.ok) return _evolutionTable;
     const text = await res.text();
     const re = /\[\s*(SPECIES_[A-Z0-9_]+)\s*\]\s*=\s*\{([\s\S]*?)\},/g;
@@ -553,7 +572,7 @@ async function loadBattleMovesH(){
   if (_battleMoves) return _battleMoves;
   _battleMoves = {};
   try{
-    const res = await fetch('src/data/raw/battle_moves.h');
+    const res = await fetchNoCache('src/data/raw/battle_moves.h');
     if (!res.ok) return _battleMoves;
     const text = await res.text();
     const re = /\[\s*(MOVE_[A-Z0-9_]+)\s*\]\s*=\s*\{([\s\S]*?)\n\s*\},/g;
@@ -1721,7 +1740,7 @@ function createTrainerCard(trainer, speciesList){
   // compute and display trainer score based on planned team
   (async ()=>{
     let planned = [];
-    try{ planned = JSON.parse(localStorage.getItem('emerald_planned_team') || '[]'); }catch(e){ planned = []; }
+    try{ planned = getPlannedTeam(); }catch(e){ planned = []; }
     const sc = await computeTrainerScore(trainer, planned);
     if (sc === 0){
       scoreEl.textContent = `Score: —`;
@@ -1801,7 +1820,7 @@ function createTrainerCard(trainer, speciesList){
       (async ()=>{
         try{
           let planned = [];
-          try{ planned = JSON.parse(localStorage.getItem('emerald_planned_team') || '[]'); }catch(e){ planned = []; }
+          try{ planned = getPlannedTeam(); }catch(e){ planned = []; }
           const sc = await computeTrainerScore(trainer, planned);
           const el = trainerScoreEls.get(trainer.name);
           if (el){ el.textContent = sc === 0 ? `Score: —` : `Score: ${sc.toFixed(2)}/10`; }
@@ -2055,6 +2074,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   const plannedTeamEl = createPlannedTeamArea(speciesList);
   appContainer.appendChild(plannedTeamEl);
 
+  // NOTE: clear-saved-state button removed — planned-team is now non-persistent by default.
+
   // Single Auto-Fill All Trainers button
   const globalAuto = document.createElement('div');
   globalAuto.style.margin = '8px 0';
@@ -2067,9 +2088,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     const lvlSets = await loadLevelUpLearnsetsH();
     const tmSets = await loadTMHMLearnsetsH();
     let planned = [];
-    try{ planned = JSON.parse(localStorage.getItem('emerald_planned_team') || '[]'); }catch(e){ planned = []; }
+    try{ planned = getPlannedTeam(); }catch(e){ planned = []; }
     let savedNatures = [];
-    try{ savedNatures = JSON.parse(localStorage.getItem('emerald_planned_team_natures') || '[]'); }catch(e){ savedNatures = []; }
+    try{ savedNatures = getPlannedNatures(); }catch(e){ savedNatures = []; }
     for (const t of trainersList){
       const slotControls = trainerSlotControls.get(t.name);
       if (!slotControls) continue;
@@ -2140,7 +2161,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     // after auto-fill, recompute scores for visible trainer cards
     (async ()=>{
       let planned = [];
-      try{ planned = JSON.parse(localStorage.getItem('emerald_planned_team') || '[]'); }catch(e){ planned = []; }
+      try{ planned = getPlannedTeam(); }catch(e){ planned = []; }
       for (const t of trainersList){
         try{
           const sc = await computeTrainerScore(t, planned);
@@ -2186,18 +2207,14 @@ function createPlannedTeamArea(speciesList){
   grid.style.gridAutoRows = 'auto';
   grid.style.gap = '8px';
 
-  // load saved team from localStorage
+  // Do NOT persist planned-team choices by default to avoid stale / cached user state.
+  // Use transient in-memory arrays only.
   const storageKey = 'emerald_planned_team';
   let saved = [];
-  try{ saved = JSON.parse(localStorage.getItem(storageKey) || '[]'); }catch(e){ saved = []; }
-  // saved natures per slot
   const storageKeyNatures = 'emerald_planned_team_natures';
   let savedNatures = [];
-  try{ savedNatures = JSON.parse(localStorage.getItem(storageKeyNatures) || '[]'); }catch(e){ savedNatures = []; }
-  // saved genders per slot
   const storageKeyGenders = 'emerald_planned_team_genders';
   let savedGenders = [];
-  try{ savedGenders = JSON.parse(localStorage.getItem(storageKeyGenders) || '[]'); }catch(e){ savedGenders = []; }
 
   for (let i=0;i<6;i++){
     const slot = document.createElement('div');
@@ -2347,16 +2364,16 @@ function createPlannedTeamArea(speciesList){
         }
       }
       // planned-team exact stats UI intentionally omitted; no change handler needed
-      // save
+      // do NOT persist to localStorage by default; keep only in-memory
       saved[idx] = name;
-      localStorage.setItem(storageKey, JSON.stringify(saved));
+      try{ window.__emerald_planned_team = saved; }catch(e){}
     }
 
     // handle nature changes
     natSel.addEventListener('change', async ()=>{
       const val = natSel.value;
       if (!val || val === '(none)') savedNatures[i] = null; else savedNatures[i] = val;
-      localStorage.setItem(storageKeyNatures, JSON.stringify(savedNatures));
+      try{ window.__emerald_planned_team_natures = savedNatures; }catch(e){}
       // re-render stats with new nature coloring
       const cur = spInput.value;
       if (!cur) return;
@@ -2386,7 +2403,7 @@ function createPlannedTeamArea(speciesList){
     genSel.addEventListener('change', ()=>{
       const gv = genSel.value;
       if (!gv || gv === '(none)') savedGenders[i] = null; else savedGenders[i] = gv;
-      localStorage.setItem(storageKeyGenders, JSON.stringify(savedGenders));
+      try{ window.__emerald_planned_team_genders = savedGenders; }catch(e){}
     });
   }
 

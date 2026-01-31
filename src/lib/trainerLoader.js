@@ -1,6 +1,8 @@
 // Loads trainer JSON files from `src/data/trainers`
 export async function loadTrainer(path) {
-  const res = await fetch(path);
+  const sep = path.includes('?') ? '&' : '?';
+  const url = path + sep + 'v=' + Date.now();
+  const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Failed to load trainer: ${path}`);
   const trainer = await res.json();
   return normalizeTrainerIVs(trainer);
