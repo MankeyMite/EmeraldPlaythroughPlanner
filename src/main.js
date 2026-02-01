@@ -158,6 +158,36 @@ const NATURE_MODS = {
   'Careful': { up: 'spd', down: 'spa' }
 };
 
+// Badge definitions for Hoenn (Gen3): which stat(s) each badge boosts
+// Implemented: +10% to listed stat(s) when active (internal battles only)
+const HOENN_BADGES = {
+  'Stone Badge': { key: 'stone', stats: ['atk'] },
+  'Balance Badge': { key: 'balance', stats: ['def'] },
+  'Mind Badge': { key: 'mind', stats: ['spa','spd'] },
+  'Dynamo Badge': { key: 'dynamo', stats: ['spe'] }
+};
+
+function loadActiveBadges(){
+  // Badges are always active by default (UI removed). Return all defined Hoenn badges.
+  try{ return new Set(Object.keys(HOENN_BADGES)); }catch(e){ return new Set(); }
+}
+
+function saveActiveBadges(set){
+  try{ const arr = Array.from(set); localStorage.setItem('emerald_active_badges', JSON.stringify(arr)); }catch(e){}
+}
+
+function applyBadgeBoostsToStats(statsObj, badgeSet){
+  if (!badgeSet || badgeSet.size === 0) return statsObj;
+  const out = Object.assign({}, statsObj);
+  for (const b of badgeSet){
+    // find badge by name or key
+    let def = HOENN_BADGES[b] || Object.values(HOENN_BADGES).find(x=>x.key === b);
+    if (!def) continue;
+    for (const s of def.stats){ if (out[s] != null) out[s] = Math.floor(out[s] * 1.10); }
+  }
+  return out;
+}
+
 function prettySpecies(code) {
   if (!code) return '';
   return code.replace(/^SPECIES_/, '').toLowerCase().replace(/(^|_)([a-z])/g, (m,p,c)=>c.toUpperCase());
@@ -924,7 +954,7 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
     if (power === 50){
       let mStr = null;
       try{ mStr = JSON.stringify(m); }catch(e){ mStr = String(m); }
-      console.warn('calcDamageRange: fallback power used', { moveToken, canonicalMove, fallbackPower, parsedMove: mStr, MOVE_POWER_entry: MOVE_POWER[canonicalMove], MOVE_TYPE_entry: MOVE_TYPE[canonicalMove] });
+      console.debug('calcDamageRange: fallback power used', { moveToken, canonicalMove, fallbackPower, parsedMove: mStr, MOVE_POWER_entry: MOVE_POWER[canonicalMove], MOVE_TYPE_entry: MOVE_TYPE[canonicalMove] });
     }
   }catch(e){}
   // Prefer explicit category parsed from moves; fall back to type-based rule
@@ -933,7 +963,31 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
   const A = isSpecial ? (attStats && attStats.spa ? attStats.spa : computeStatFromBase(atkBase.spa, options.attIV||31, options.attEV||0, attackerLevel, false)) : (attStats && attStats.atk ? attStats.atk : computeStatFromBase(atkBase.atk, options.attIV||31, options.attEV||0, attackerLevel, false));
   const D = isSpecial ? (defStats && defStats.spd ? defStats.spd : computeStatFromBase(defBase.spd, options.defIV||31, options.defEV||0, defenderLevel, false)) : (defStats && defStats.def ? defStats.def : computeStatFromBase(defBase.def, options.defIV||31, options.defEV||0, defenderLevel, false));
 
-  const base = Math.floor(((((2*attackerLevel)/5 + 2) * power * A / D) / 50) + 2);
+  // Apply Gen3 Hoenn badge stat boosts to attacker if requested.
+  // If options.applyBadgeBonuses is true, check active badges and apply +10% to the relevant attacking stat (Atk or SpA).
+  let badgeMultiplier = 1.0;
+  let badgesApplied = [];
+  try{
+    if (options.applyBadgeBonuses){
+      const active = loadActiveBadges();
+      if (active && active.size > 0){
+        const affectedStat = isSpecial ? 'spa' : 'atk';
+        for (const b of active){
+          const def = HOENN_BADGES[b] || Object.values(HOENN_BADGES).find(x=>x.key===b);
+          if (!def) continue;
+          if (def.stats.includes(affectedStat)){
+            badgeMultiplier *= 1.10;
+            badgesApplied.push(b);
+          }
+        }
+      }
+    }
+  }catch(e){ /* ignore */ }
+
+  // If we have a computed A from above, multiply it by badgeMultiplier
+  const A_eff = Math.max(1, Math.floor(A * badgeMultiplier));
+  // replace A used in formula (apply badge-adjusted A)
+  const base = Math.floor(((((2*attackerLevel)/5 + 2) * power * A_eff / D) / 50) + 2);
   let modifier = 1.0;
   // STAB and type effectiveness: normalize & dedupe types first
   const atkTypes = (atkInfo && atkInfo.info && Array.isArray(atkInfo.info.types)) ? Array.from(new Set(atkInfo.info.types.map(t=>String(t).toLowerCase()))) : [];
@@ -956,6 +1010,7 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
     expected,
     ohkoGuaranteed: min >= defHP,
     ohkoPossible: max >= defHP,
+    move: canonicalMove,
     power,
     type: mtype,
     category: (m && m.category) ? m.category : (isSpecial ? 'special' : 'physical'),
@@ -969,6 +1024,9 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
     effectiveness: effMult,
     trueBase,
     mults,
+    // badge debug info
+    badgeMultiplier: badgeMultiplier || 1.0,
+    badgesApplied: badgesApplied || [],
   };
 }
 
@@ -1073,7 +1131,7 @@ async function computePairScore(userMon, enemyMon, context = {}){
   for (const mv of moves){
     if (!mv) continue;
     if (isStatusMove(mv)) continue;
-    const dr = await calcDamageRange(userMon.species, uLevel, enemyMon.species, eLevel, mv, { attStats: uStats, defStats: eStats });
+    const dr = await calcDamageRange(userMon.species, uLevel, enemyMon.species, eLevel, mv, { attStats: uStats, defStats: eStats, applyBadgeBonuses: true });
     if (dr.expected > bestUser.expected){ bestUser = { move: mv, expected: dr.expected, dr }; }
   }
 
@@ -1081,6 +1139,7 @@ async function computePairScore(userMon, enemyMon, context = {}){
   const userExpected = bestUser.expected || 0;
   const enemyBest = await computeEnemyBestHit(enemyMon, userMon, context);
   const enemyExpected = enemyBest && enemyBest.expectedDamage ? enemyBest.expectedDamage : 0;
+  const enemyBestMoveToken = enemyBest && enemyBest.bestMove ? enemyBest.bestMove : null;
 
   // hits to KO calculations (use expected-mid damage)
   const eps = 1e-6;
@@ -1117,13 +1176,13 @@ async function computePairScore(userMon, enemyMon, context = {}){
   // assemble detailed result object
   const userBestMoveObj = bestUser.move ? { id: bestUser.move, expected: bestUser.expected || 0, max: (bestUser.dr && bestUser.dr.max) || null, dr: bestUser.dr || null } : null;
 
-  if (uSpe > eSpe && hitsToKOUser === 1 && userExpected > 0) return { total: 10, offense, defense, speed: speedPts, reason: 'fast-ohko', userExpected, enemyExpected, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, enemyBestDr: null };
-  if (enemyExpected === 0 && userExpected > 0) return { total: 10, offense, defense, speed: speedPts, reason: 'immune-no-damage', userExpected, enemyExpected, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, enemyBestDr: null };
+  if (uSpe > eSpe && hitsToKOUser === 1 && userExpected > 0) return { total: 10, offense, defense, speed: speedPts, reason: 'fast-ohko', userExpected, enemyExpected, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, enemyBestDr: null, enemyBestMove: enemyBestMoveToken };
+  if (enemyExpected === 0 && userExpected > 0) return { total: 10, offense, defense, speed: speedPts, reason: 'immune-no-damage', userExpected, enemyExpected, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, enemyBestDr: null, enemyBestMove: enemyBestMoveToken };
 
   const total = Math.min(10, offense + defense + speedPts);
   // include enemy best damage result if available
   const enemyBestDr = (enemyBest && enemyBest.dr) ? enemyBest.dr : null;
-  return { total, offense, defense, speed: speedPts, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, userExpected, enemyExpected, enemyBestDr };
+  return { total, offense, defense, speed: speedPts, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, userExpected, enemyExpected, enemyBestDr, enemyBestMove: enemyBestMoveToken };
 }
 
 async function evaluateMatchup(A, B, moveset, context = {}){
@@ -1142,7 +1201,7 @@ async function evaluateMatchup(A, B, moveset, context = {}){
       B.species,
       B.level || B.lvl || 50,
       mv,
-      Object.assign({}, context, { attStats: A.statsFinal || A.stats || null, defStats: B.statsFinal || B.stats || null })
+      Object.assign({}, context, { attStats: A.statsFinal || A.stats || null, defStats: B.statsFinal || B.stats || null, applyBadgeBonuses: !!context.applyBadgeBonuses })
     );
     const koClass = classifyKO(dmg, dmg.defHP || (B.statsFinal && B.statsFinal.hp) || 1);
     const outspeed = compareSpeed(A.statsFinal.spe, B.statsFinal.spe, context.speedTiePolicy);
@@ -1293,9 +1352,9 @@ async function computeTrainerScore(trainer, plannedTeam){
   const tmSets = await loadTMHMLearnsetsH();
   const teamMons = [];
   if (!plannedTeam || plannedTeam.length === 0) return 0;
-  // load saved natures for planned team
+  // load saved natures for planned team (use in-memory planned natures)
   let savedNatures = [];
-  try{ savedNatures = JSON.parse(localStorage.getItem('emerald_planned_team_natures') || '[]'); }catch(e){ savedNatures = []; }
+  try{ savedNatures = getPlannedNatures() || []; }catch(e){ savedNatures = []; }
   for (let i=0;i<6;i++){
     const name = plannedTeam[i];
     if (!name) continue;
@@ -1323,6 +1382,20 @@ async function computeTrainerScore(trainer, plannedTeam){
       if (mod.up && statsFinal[mod.up] != null) statsFinal[mod.up] = Math.floor(statsFinal[mod.up] * 1.1);
       if (mod.down && statsFinal[mod.down] != null) statsFinal[mod.down] = Math.floor(statsFinal[mod.down] * 0.9);
     }
+    // Auto-apply Dynamo badge speed boost for trainers after Wattson (segment > 3)
+    let dynamoApplied = false;
+    try{
+      const seg = trainerNameToSegment(trainer) || approximateSegmentForLevel(battleLevel);
+      if (seg && seg > 3){
+        if (statsFinal.spe != null){
+          // preserve pre-boost speed for display
+          statsFinal.speBeforeDynamo = statsFinal.spe;
+          statsFinal.spe = Math.floor(statsFinal.spe * 1.1);
+          dynamoApplied = true;
+        }
+      }
+    }catch(e){ /* ignore */ }
+    // (Badge boosts are applied later in calcDamageRange when computing damage)
     // assemble candidate moves (top 4 by power+stab)
     const levelMoves = (lvlSets[chosenToken] || []).filter(m=>m.level <= battleLevel).map(m=>m.move);
     const tmMoves = (tmSets[chosenToken] || []);
@@ -1352,7 +1425,7 @@ async function computeTrainerScore(trainer, plannedTeam){
       }
     }
 
-    teamMons.push({ species: chosenToken, level: battleLevel, statsFinal, moveset });
+    teamMons.push({ species: chosenToken, level: battleLevel, statsFinal, moveset, dynamoApplied });
   }
 
   // build trainer party monstates
@@ -1395,7 +1468,7 @@ async function buildPlannedTeamMonStates(plannedTeam, trainer){
   const teamMons = [];
   if (!plannedTeam || plannedTeam.length === 0) return teamMons;
   let savedNatures = [];
-  try{ savedNatures = JSON.parse(localStorage.getItem('emerald_planned_team_natures') || '[]'); }catch(e){ savedNatures = []; }
+  try{ savedNatures = getPlannedNatures() || []; }catch(e){ savedNatures = []; }
   for (let i=0;i<6;i++){
     const name = plannedTeam[i];
     if (!name) continue;
@@ -1487,13 +1560,13 @@ async function computePerEnemyBest(teamMons, partyStates, context = {}){
     let damageInfo = null;
     if (best && best.chosenEval && best.chosenEval.bestMoveId){
       const dr = await calcDamageRange(
-        best.chosenMon.species,
-        best.chosenMon.level,
-        enemy.species,
-        enemy.level,
-        best.chosenEval.bestMoveId,
-        { attStats: best.chosenMon.statsFinal || best.chosenMon.stats || null, defStats: enemy.statsFinal || enemy.stats || null }
-      );
+          best.chosenMon.species,
+          best.chosenMon.level,
+          enemy.species,
+          enemy.level,
+          best.chosenEval.bestMoveId,
+          { attStats: best.chosenMon.statsFinal || best.chosenMon.stats || null, defStats: enemy.statsFinal || enemy.stats || null, applyBadgeBonuses: true }
+        );
       damageInfo = dr;
     }
     perEnemy.push({ enemy, best, damageInfo });
@@ -1535,8 +1608,20 @@ function createTrainerCard(trainer, speciesList){
         const species = ctrl.spInput.value && ctrl.spInput.value.trim();
         if (!species) continue;
         const lvl = parseInt(ctrl.lvInput.value,10) || 50;
-        const stats = ctrl.spInput.computedStats || null;
+        let stats = ctrl.spInput.computedStats || null;
         const moveset = (ctrl.moveSelects || []).map(s=>s.value).filter(Boolean);
+        // Auto-apply Dynamo badge to player's mons for this trainer if trainer segment > 3
+        try{
+          const seg = trainerNameToSegment(trainer) || approximateSegmentForLevel(trainer.maxLevel || trainer.level || 50);
+          if (seg && seg > 3 && stats && typeof stats.spe === 'number'){
+            // preserve pre-boost speed
+            stats = Object.assign({}, stats);
+            stats.speBeforeDynamo = stats.spe;
+            stats.spe = Math.floor(stats.spe * 1.1);
+            teamMons.push({ species, level: lvl, statsFinal: stats, moveset, dynamoApplied: true });
+            continue;
+          }
+        }catch(e){ /* ignore */ }
         teamMons.push({ species, level: lvl, statsFinal: stats, moveset });
       }catch(e){ /* ignore slot errors */ }
     }
@@ -1588,58 +1673,110 @@ function createTrainerCard(trainer, speciesList){
 
             const title = document.createElement('h4'); title.textContent = `${prettySpecies(teamMons[ri].species)} vs ${prettySpecies(partyStates[ci].species)}`; box.appendChild(title);
 
-            const pre = document.createElement('pre'); pre.style.whiteSpace='pre-wrap'; pre.style.fontSize='13px';
-            const lines = [];
-            lines.push(`Total score: ${v.total}`);
-            if (v.reason) lines.push(`Reason: ${v.reason}`);
-            lines.push(`Offense points: ${v.offense}`);
-            lines.push(`Defense points: ${v.defense}`);
-            lines.push(`Speed points: ${v.speed}`);
-            if (v.hitsToKOUser != null) lines.push(`Hits to KO (user -> enemy): ${v.hitsToKOUser}`);
-            if (v.hitsToKOEnemy != null) lines.push(`Hits to KO (enemy -> user): ${v.hitsToKOEnemy}`);
-            if (v.userExpected != null) lines.push(`User expected damage per best move: ${v.userExpected.toFixed(2)}`);
-            if (v.enemyExpected != null) lines.push(`Enemy expected damage per best move: ${v.enemyExpected.toFixed(2)}`);
-            if (v.userBestMove) lines.push(`User best move: ${v.userBestMove.id} (expected ${v.userBestMove.expected || 0}${v.userBestMove.max ? `, max ${v.userBestMove.max}` : ''})`);
+            // Build a clearer structured breakdown using DOM elements
+            const content = document.createElement('div');
+            content.style.fontSize = '13px';
+            content.style.lineHeight = '1.35';
 
-            // Detailed damage formula for user best move
+            // Top summary: bold user/enemy labels
+            const summary = document.createElement('div');
+            summary.style.display = 'flex';
+            summary.style.justifyContent = 'space-between';
+            summary.style.gap = '12px';
+            summary.style.flexWrap = 'wrap';
+
+            const userLabel = document.createElement('div');
+            const userStrong = document.createElement('strong');
+            userStrong.textContent = `User: ${prettySpecies(teamMons[ri].species)} (Lv ${teamMons[ri].level})`;
+            userLabel.appendChild(userStrong);
+            summary.appendChild(userLabel);
+
+            const enemyLabel = document.createElement('div');
+            const enemyStrong = document.createElement('strong');
+            enemyStrong.textContent = `Enemy: ${prettySpecies(partyStates[ci].species)} (Lv ${partyStates[ci].level})`;
+            enemyLabel.appendChild(enemyStrong);
+            summary.appendChild(enemyLabel);
+
+            content.appendChild(summary);
+
+            // Key metrics table
+            const metrics = document.createElement('div');
+            metrics.style.marginTop = '8px';
+            const mlist = document.createElement('ul');
+            mlist.style.margin = '6px 0 8px 18px';
+            mlist.style.padding = '0';
+            mlist.style.listStyle = 'disc';
+            const pushMetric = (k,vv)=>{ const it = document.createElement('li'); it.textContent = `${k}: ${vv}`; mlist.appendChild(it); };
+            pushMetric('Total score', v.total);
+            if (v.reason) pushMetric('Reason', v.reason);
+            pushMetric('Offense points', v.offense);
+            pushMetric('Defense points', v.defense);
+            pushMetric('Speed points', v.speed);
+            // attacker speed before/after
+            try{
+              const tm = teamMons[ri];
+              if (tm){
+                const boosted = (tm.statsFinal && typeof tm.statsFinal.spe === 'number') ? tm.statsFinal.spe : null;
+                const before = (tm.statsFinal && typeof tm.statsFinal.speBeforeDynamo === 'number') ? tm.statsFinal.speBeforeDynamo : null;
+                if (before != null && boosted != null && tm.dynamoApplied){ pushMetric('Attacker speed', `${before} -> ${boosted} (Dynamo ×1.10 applied)`); }
+                else if (boosted != null) pushMetric('Attacker speed', boosted);
+              }
+            }catch(e){}
+            if (v.hitsToKOUser != null) pushMetric('Hits to KO (user -> enemy)', v.hitsToKOUser);
+            if (v.hitsToKOEnemy != null) pushMetric('Hits to KO (enemy -> user)', v.hitsToKOEnemy);
+            if (v.userExpected != null) pushMetric('User expected damage per best move', v.userExpected.toFixed(2));
+            if (v.enemyExpected != null) pushMetric('Enemy expected damage per best move', v.enemyExpected.toFixed(2));
+            if (v.userBestMove) pushMetric('User best move', `${v.userBestMove.id} (expected ${v.userBestMove.expected || 0}${v.userBestMove.max ? `, max ${v.userBestMove.max}` : ''})`);
+            // enemy best move name
+            if (v.enemyBestMove) pushMetric('Enemy best move', v.enemyBestMove);
+            content.appendChild(mlist);
+
+            // Helper to append a detailed breakdown block
+            const appendBreakdown = (titleText, dr, showMoveName)=>{
+              const block = document.createElement('div'); block.style.marginTop = '10px';
+              const t = document.createElement('div'); t.style.fontWeight='700'; t.textContent = titleText; block.appendChild(t);
+              const p = document.createElement('pre'); p.style.whiteSpace='pre-wrap'; p.style.fontSize='12px'; p.style.margin='6px 0';
+              const lines = [];
+              if (showMoveName && dr && dr.move) lines.push(`Move: ${dr.move}`);
+              if (dr) {
+                lines.push(`Power: ${dr.power}`);
+                if (dr.type) lines.push(`Type: ${dr.type}`);
+                if (dr.category) lines.push(`Category: ${dr.category}`);
+                // Attacker stats: show both attack and special attack for clarity
+                if (dr.attacker){
+                  if (dr.category === 'physical') lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, Level=${dr.attacker.level}`);
+                  else if (dr.category === 'special') lines.push(`Attacker stats used: SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`);
+                  else lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`);
+                }
+                // Defender stats: only show the relevant defense based on move category
+                if (dr.defender){
+                  if (dr.category === 'physical') lines.push(`Defender stats used: Def=${dr.defender.defStat}, HP=${dr.defender.hp}`);
+                  else if (dr.category === 'special') lines.push(`Defender stats used: SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`);
+                  else lines.push(`Defender stats used: Def=${dr.defender.defStat}, SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`);
+                }
+                lines.push(`Raw base (game formula): ${dr.rawBase}`);
+                lines.push(`STAB: ${dr.stab}`);
+                lines.push(`Effectiveness: ${dr.effectiveness}`);
+                lines.push(`Combined modifier (STAB * effectiveness): ${dr.modifier.toFixed(3)}`);
+                if (dr.badgesApplied && dr.badgesApplied.length) lines.push(`Badge multiplier: ${dr.badgeMultiplier.toFixed(3)} (applied: ${dr.badgesApplied.join(', ')})`);
+                lines.push(`True base after modifiers (floored): ${dr.trueBase}`);
+                lines.push(`Rolls (85..100): ${dr.rolls.join(', ')}`);
+                lines.push(`min: ${dr.min}, max: ${dr.max}, expected (mean): ${dr.expected.toFixed(2)}`);
+              }
+              p.textContent = lines.join('\n'); block.appendChild(p); content.appendChild(block);
+            };
+
+            // Append user and enemy breakdowns
             if (v.userBestMove && v.userBestMove.dr){
-              const dr = v.userBestMove.dr;
-              lines.push('\n--- User best move damage breakdown ---');
-              lines.push(`Move power: ${dr.power}`);
-              lines.push(`Move type: ${dr.type}`);
-              lines.push(`Move category: ${dr.category}`);
-              lines.push(`Attacker types: ${(dr.attacker.types || []).join('/')}`);
-              lines.push(`Defender types: ${(dr.defender.types || []).join('/')}`);
-              lines.push(`Attacker stats: atk=${dr.attacker.atkStat}, spa=${dr.attacker.spaStat || 'N/A'}, level=${dr.attacker.level}`);
-              lines.push(`Defender stats: def=${dr.defender.defStat}, spd=${dr.defender.spdStat || 'N/A'}, hp=${dr.defender.hp}`);
-              lines.push(`Raw base (game formula): ${dr.rawBase}`);
-              lines.push(`STAB: ${dr.stab}`);
-              lines.push(`Type effectiveness multiplier: ${dr.effectiveness}`);
-              lines.push(`Combined modifier (STAB * effectiveness): ${dr.modifier.toFixed(3)}`);
-              lines.push(`True base after modifiers (floored): ${dr.trueBase}`);
-              lines.push(`Rolls (85..100): ${dr.rolls.join(', ')}`);
-              lines.push(`min: ${dr.min}, max: ${dr.max}, expected (mean): ${dr.expected.toFixed(2)}`);
+              appendBreakdown('User best move damage breakdown', v.userBestMove.dr, true);
             }
-
-            // Detailed damage formula for enemy best move (if available)
             if (v.enemyBestDr){
-              const ed = v.enemyBestDr;
-              lines.push('\n--- Enemy best move damage breakdown ---');
-              lines.push(`Move power: ${ed.power}`);
-              lines.push(`Move type: ${ed.type}`);
-              lines.push(`Attacker stats: atk=${ed.attacker.atkStat}, spa=${ed.attacker.spaStat || 'N/A'}, level=${ed.attacker.level}`);
-              lines.push(`Defender stats: def=${ed.defender.defStat}, spd=${ed.defender.spdStat || 'N/A'}, hp=${ed.defender.hp}`);
-              lines.push(`Raw base (game formula): ${ed.rawBase}`);
-              lines.push(`STAB: ${ed.stab}`);
-              lines.push(`Type effectiveness multiplier: ${ed.effectiveness}`);
-              lines.push(`Combined modifier (STAB * effectiveness): ${ed.modifier.toFixed(3)}`);
-              lines.push(`True base after modifiers (floored): ${ed.trueBase}`);
-              lines.push(`Rolls (85..100): ${ed.rolls.join(', ')}`);
-              lines.push(`min: ${ed.min}, max: ${ed.max}, expected (mean): ${ed.expected.toFixed(2)}`);
+              // attach move token if available on result
+              if (v.enemyBestMove) v.enemyBestDr.move = v.enemyBestMove;
+              appendBreakdown('Enemy best move damage breakdown', v.enemyBestDr, true);
             }
 
-            pre.textContent = lines.join('\n');
-            box.appendChild(pre);
+            box.appendChild(content);
             modal.appendChild(box);
             modal.addEventListener('click', (evt)=>{ if (evt.target === modal) modal.remove(); });
             document.body.appendChild(modal);
@@ -1686,8 +1823,7 @@ function createTrainerCard(trainer, speciesList){
   // trainer Pokémon info (levels, moves, picture)
   const infoRow = document.createElement('div');
   // Use a fixed 6-column grid so trainer pokemon line up with the 6 builder slots
-  infoRow.style.display = 'grid';
-  infoRow.style.gridTemplateColumns = 'repeat(6, 1fr)';
+  infoRow.className = 'trainer-info-row';
   infoRow.style.gap = '8px';
   infoRow.style.marginBottom = '8px';
 
@@ -2125,7 +2261,7 @@ function createTrainerCard(trainer, speciesList){
       const speciesName = spInput.value;
       const lvlRaw = lvInput.value;
       let savedNatures = [];
-      try{ savedNatures = JSON.parse(localStorage.getItem('emerald_planned_team_natures') || '[]'); }catch(e){ savedNatures = []; }
+      try{ savedNatures = getPlannedNatures() || []; }catch(e){ savedNatures = []; }
       // determine this slot's current index within the trainer's slotControls array (robust to deletions)
       const currentIdx = slotControls.findIndex(c => c.computeAndRenderSlotStats === computeAndRenderSlotStats);
       const natVal = savedNatures[currentIdx] || null;
@@ -2165,8 +2301,8 @@ function createTrainerCard(trainer, speciesList){
     // initial compute
     computeAndRenderSlotStats().catch(()=>{});
 
-    // collect controls for programmatic filling
-    slotControls.push({ spInput, preview, setSlotPreview, lvInput, ivInput, evInputs, moveSelects, populateMoveSelectsForSlot, computeAndRenderSlotStats });
+    // collect controls for programmatic filling (include slot DOM for visibility control)
+    slotControls.push({ spInput, preview, setSlotPreview, lvInput, ivInput, evInputs, moveSelects, populateMoveSelectsForSlot, computeAndRenderSlotStats, slotEl: slot });
 
     builder.appendChild(slot);
   }
@@ -2208,6 +2344,28 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   appContainer.innerHTML = '';
   const plannedTeamEl = createPlannedTeamArea(speciesList);
   appContainer.appendChild(plannedTeamEl);
+
+  // render badge controls area (if present in DOM)
+  try{
+    const badgeRoot = document.getElementById('badgeControls');
+    if (badgeRoot){
+      badgeRoot.innerHTML = '';
+      const lbl = document.createElement('div'); lbl.textContent = 'Player Badges (Hoenn — Gen3 +10%):'; lbl.style.fontWeight = '600'; lbl.style.marginBottom = '6px'; badgeRoot.appendChild(lbl);
+      const active = loadActiveBadges();
+      for (const name of Object.keys(HOENN_BADGES)){
+        const id = 'badge_' + HOENN_BADGES[name].key;
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = id; cb.checked = active.has(name) || active.has(HOENN_BADGES[name].key);
+        const lab = document.createElement('label'); lab.htmlFor = cb.id; lab.style.marginRight = '12px'; lab.style.display = 'inline-flex'; lab.style.alignItems = 'center';
+        const span = document.createElement('span'); span.textContent = name; span.style.marginLeft = '6px'; lab.appendChild(cb); lab.appendChild(span);
+        cb.addEventListener('change', ()=>{
+          const set = loadActiveBadges();
+          if (cb.checked) set.add(name); else set.delete(name);
+          saveActiveBadges(set);
+        });
+        badgeRoot.appendChild(lab);
+      }
+    }
+  }catch(e){/* ignore */}
 
   // NOTE: clear-saved-state button removed — planned-team is now non-persistent by default.
 
@@ -2292,6 +2450,14 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         // compute stats for this trainer slot if inputs are populated
         try{ if (typeof ctrl.computeAndRenderSlotStats === 'function') await ctrl.computeAndRenderSlotStats(); }catch(e){ /* ignore */ }
       }
+      // After filling slots, adjust visible slot count to match planned team size
+      try{
+        const activeCount = (planned || []).filter(x=>x && String(x).trim()).length || 0;
+        for (let i=0;i<slotControls.length;i++){
+          const ctrl = slotControls[i];
+          try{ if (ctrl && ctrl.slotEl) ctrl.slotEl.style.display = (i < activeCount) ? 'block' : 'none'; }catch(e){}
+        }
+      }catch(e){}
     }
     // after auto-fill, recompute scores for visible trainer cards
     (async ()=>{
@@ -2336,11 +2502,7 @@ function createPlannedTeamArea(speciesList){
   wrapper.appendChild(note);
 
   const grid = document.createElement('div');
-  grid.style.display = 'grid';
-  // 3 columns x 2 rows layout for planned team
-  grid.style.gridTemplateColumns = 'repeat(3, 1fr)';
-  grid.style.gridAutoRows = 'auto';
-  grid.style.gap = '8px';
+  grid.className = 'planned-grid';
 
   // Do NOT persist planned-team choices by default to avoid stale / cached user state.
   // Use transient in-memory arrays only.

@@ -36,6 +36,19 @@
 	.type-wrapper .type-pill{padding:4px 8px;font-size:12px;border-radius:12px}
 }
 
+/* Planned team responsive grid */
+.planned-grid{display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:auto;gap:8px}
+@media (max-width:600px){
+  .planned-grid{grid-template-columns:1fr}
+}
+
+/* Trainer info row: show 6 columns on desktop, horizontal scroll on small screens */
+.trainer-info-row{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+@media (max-width:600px){
+  .trainer-info-row{display:flex;overflow-x:auto;gap:8px;padding-bottom:6px}
+  .trainer-info-row > div{min-width:140px;flex:0 0 140px}
+}
+
 		</style>
 	</head>
 	<body>
@@ -46,6 +59,7 @@
 		<main class="container">
 			<section class="panel">
 				<h2 style="margin-top:0;font-size:16px">Trainers & Team Builder</h2>
+				<!-- Badge controls removed: badges are always active by default -->
 				<div id="trainersContainer"></div>
 			</section>
 
