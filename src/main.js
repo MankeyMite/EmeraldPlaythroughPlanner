@@ -450,7 +450,28 @@ function computeBattleLevel(trainer){
     const lvl = parseInt(raw, 10) || 1;
     if (lvl > max) max = lvl;
   }
+  // Cap player-facing battle level for Elite Four / Champion sequence
+  // In Emerald Nuzlocke progression we treat Sidney -> Wallace as the late-game
+  // block where player's Pokémon are limited to level 55 by default.
+  try{
+    const eliteNames = new Set(['sidney','phoebe','glacia','drake','wallace']);
+    const tname = (trainer && trainer.name) ? String(trainer.name).toLowerCase() : '';
+    if (eliteNames.has(tname)) return Math.min(max, 55);
+  }catch(e){ /* ignore and fallthrough */ }
   return max;
+}
+
+// Compute the default player-side level to use when populating planned-team slots
+// For early trainers we match the trainer's highest level; for Elite Four/Champion
+// (Sidney -> Wallace) we use a Nuzlocke cap of 55 by default.
+function computePlayerDefaultLevel(trainer){
+  const enemyLevel = computeBattleLevel(trainer);
+  try{
+    const eliteNames = new Set(['sidney','phoebe','glacia','drake','wallace']);
+    const tname = (trainer && trainer.name) ? String(trainer.name).toLowerCase() : '';
+    if (eliteNames.has(tname)) return 55;
+  }catch(e){ }
+  return enemyLevel;
 }
 
 function buildReverseEvolutionMap(evoTable){
@@ -1085,6 +1106,8 @@ async function computeEnemyBestHit(enemyMon, ourMon, context = {}){
   const candidates = [];
   if (Array.isArray(enemyMon.moves) && enemyMon.moves.length){
     for (const mv of enemyMon.moves){
+      // ignore pure support/status moves when choosing the enemy's best damaging hit
+      if (isStatusMove(mv)) continue;
       const dmg = await calcDamageRange(
         enemyMon.species,
         enemyMon.lvl || enemyMon.level || 50,
@@ -1112,6 +1135,22 @@ async function computeEnemyBestHit(enemyMon, ourMon, context = {}){
     }
   }
   if (candidates.length === 0) return { expectedDamage: 0, maxDamage: 0, canDamage: false };
+  // Prefer candidates that actually deal damage and have non-zero effectiveness.
+  const damaging = candidates.filter(c=>c.dr && c.dr.max > 0 && (typeof c.dr.power === 'undefined' ? true : c.dr.power > 0) && (typeof c.dr.effectiveness === 'undefined' || c.dr.effectiveness > 0));
+  if (damaging.length > 0){
+    damaging.sort((a,b)=>b.expected - a.expected);
+    const best = damaging[0];
+    return { expectedDamage: best.expected, maxDamage: best.max, canDamage: best.max > 0 && (typeof best.dr.effectiveness === 'undefined' ? true : best.dr.effectiveness > 0), bestMove: best.move, dr: best.dr };
+  }
+  // If no damaging moves, prefer a move that is explicitly ineffective (effectiveness === 0),
+  // so we can report the opponent cannot damage us instead of picking a support/status move.
+  const zeroEff = candidates.filter(c=>c.dr && typeof c.dr.effectiveness !== 'undefined' && c.dr.effectiveness === 0);
+  if (zeroEff.length > 0){
+    zeroEff.sort((a,b)=>b.expected - a.expected);
+    const best = zeroEff[0];
+    return { expectedDamage: best.expected, maxDamage: best.max, canDamage: false, bestMove: best.move, dr: best.dr };
+  }
+  // Fallback: pick the best candidate (may be a support/status move that calcDamageRange produced nonzero for)
   candidates.sort((a,b)=>b.expected - a.expected);
   const best = candidates[0];
   return { expectedDamage: best.expected, maxDamage: best.max, canDamage: best.max > 0, bestMove: best.move, dr: best.dr };
@@ -1140,6 +1179,13 @@ async function computePairScore(userMon, enemyMon, context = {}){
   const enemyBest = await computeEnemyBestHit(enemyMon, userMon, context);
   const enemyExpected = enemyBest && enemyBest.expectedDamage ? enemyBest.expectedDamage : 0;
   const enemyBestMoveToken = enemyBest && enemyBest.bestMove ? enemyBest.bestMove : null;
+
+  // If the enemy's best attacking move has zero effectiveness multiplier (immunity),
+  // treat this as an instant full score (user mon cannot be damaged by enemy moves).
+  const enemyBestDrObj = enemyBest && enemyBest.dr ? enemyBest.dr : null;
+  if (enemyBestDrObj && typeof enemyBestDrObj.effectiveness !== 'undefined' && enemyBestDrObj.effectiveness === 0 && userExpected > 0){
+    return { total: 10, offense:  (function(){ let o=0; if (userExpected>0){ const hitsToKOUser = userExpected>1e-6 && eStats && eStats.hp ? Math.ceil((eStats.hp)/userExpected) : Infinity; if (hitsToKOUser===1) o=3; else if (hitsToKOUser===2) o=2; else if (hitsToKOUser===3) o=1; } return o;})(), defense: 6, speed: (uStats && eStats && uStats.spe != null && eStats.spe != null ? (uStats.spe>eStats.spe?1:(uStats.spe===eStats.spe?0.5:0)):0), reason: 'immune-effectiveness-zero', userExpected, enemyExpected, hitsToKOUser: (userExpected>1e-6 && eStats && eStats.hp ? Math.ceil((eStats.hp)/userExpected) : Infinity), hitsToKOEnemy: Infinity, userBestMove: bestUser.move?{id:bestUser.move, expected:bestUser.expected, dr:bestUser.dr}:null, enemyBestDr: enemyBestDrObj, enemyBestMove: enemyBestMoveToken };
+  }
 
   // hits to KO calculations (use expected-mid damage)
   const eps = 1e-6;
@@ -1348,6 +1394,7 @@ async function computeDamage(attackerToken, attackerLevel, defenderToken, defend
 async function computeTrainerScore(trainer, plannedTeam){
   // Build team MonState objects from plannedTeam and evaluate using scoreTeamVsTrainer
   const battleLevel = computeBattleLevel(trainer);
+  const playerLevelDefault = computePlayerDefaultLevel(trainer);
   const lvlSets = await loadLevelUpLearnsetsH();
   const tmSets = await loadTMHMLearnsetsH();
   const teamMons = [];
@@ -1358,7 +1405,7 @@ async function computeTrainerScore(trainer, plannedTeam){
   for (let i=0;i<6;i++){
     const name = plannedTeam[i];
     if (!name) continue;
-    const chosenToken = await devolveSpeciesToLegalAtLevel(name, battleLevel);
+    const chosenToken = await devolveSpeciesToLegalAtLevel(name, playerLevelDefault);
     const displayName = prettySpecies(chosenToken).toLowerCase();
     const si = await getSpeciesInfoByName(displayName) || await getSpeciesInfoByName(chosenToken);
     if (!si || !si.info || !si.info.baseStats){
@@ -1368,12 +1415,12 @@ async function computeTrainerScore(trainer, plannedTeam){
     if (!si || !si.info || !si.info.baseStats) continue;
     const base = si.info.baseStats;
     const statsFinal = {
-      hp: computeStatFromBase(base.hp, 31, 0, battleLevel, true),
-      atk: computeStatFromBase(base.atk, 31, 0, battleLevel, false),
-      def: computeStatFromBase(base.def, 31, 0, battleLevel, false),
-      spa: computeStatFromBase(base.spa, 31, 0, battleLevel, false),
-      spd: computeStatFromBase(base.spd, 31, 0, battleLevel, false),
-      spe: computeStatFromBase(base.spe, 31, 0, battleLevel, false)
+      hp: computeStatFromBase(base.hp, 31, 0, playerLevelDefault, true),
+      atk: computeStatFromBase(base.atk, 31, 0, playerLevelDefault, false),
+      def: computeStatFromBase(base.def, 31, 0, playerLevelDefault, false),
+      spa: computeStatFromBase(base.spa, 31, 0, playerLevelDefault, false),
+      spd: computeStatFromBase(base.spd, 31, 0, playerLevelDefault, false),
+      spe: computeStatFromBase(base.spe, 31, 0, playerLevelDefault, false)
     };
     // apply nature if present
     const chosenNature = savedNatures[i] || null;
@@ -1463,6 +1510,7 @@ async function computeTrainerScore(trainer, plannedTeam){
 // Build planned team MonState objects (used by scoring and UI breakdown)
 async function buildPlannedTeamMonStates(plannedTeam, trainer){
   const battleLevel = computeBattleLevel(trainer);
+  const playerLevelDefault = computePlayerDefaultLevel(trainer);
   const lvlSets = await loadLevelUpLearnsetsH();
   const tmSets = await loadTMHMLearnsetsH();
   const teamMons = [];
@@ -1472,17 +1520,17 @@ async function buildPlannedTeamMonStates(plannedTeam, trainer){
   for (let i=0;i<6;i++){
     const name = plannedTeam[i];
     if (!name) continue;
-    const chosenToken = await devolveSpeciesToLegalAtLevel(name, battleLevel);
+    const chosenToken = await devolveSpeciesToLegalAtLevel(name, playerLevelDefault);
     const si = await getSpeciesInfoByName(prettySpecies(chosenToken).toLowerCase()) || await getSpeciesInfoByName(chosenToken);
     if (!si || !si.info || !si.info.baseStats) continue;
     const base = si.info.baseStats;
     const statsFinal = {
-      hp: computeStatFromBase(base.hp, 31, 0, battleLevel, true),
-      atk: computeStatFromBase(base.atk, 31, 0, battleLevel, false),
-      def: computeStatFromBase(base.def, 31, 0, battleLevel, false),
-      spa: computeStatFromBase(base.spa, 31, 0, battleLevel, false),
-      spd: computeStatFromBase(base.spd, 31, 0, battleLevel, false),
-      spe: computeStatFromBase(base.spe, 31, 0, battleLevel, false)
+      hp: computeStatFromBase(base.hp, 31, 0, playerLevelDefault, true),
+      atk: computeStatFromBase(base.atk, 31, 0, playerLevelDefault, false),
+      def: computeStatFromBase(base.def, 31, 0, playerLevelDefault, false),
+      spa: computeStatFromBase(base.spa, 31, 0, playerLevelDefault, false),
+      spd: computeStatFromBase(base.spd, 31, 0, playerLevelDefault, false),
+      spe: computeStatFromBase(base.spe, 31, 0, playerLevelDefault, false)
     };
     const chosenNature = savedNatures[i] || null;
     if (chosenNature && NATURE_MODS[chosenNature]){
@@ -1794,6 +1842,7 @@ function createTrainerCard(trainer, speciesList){
 
   // team builder area - fixed 6 columns to match trainer info row
   const builder = document.createElement('div');
+  builder.className = 'trainer-builder-row';
   builder.style.display = 'grid';
   builder.style.gridTemplateColumns = 'repeat(6, 1fr)';
   builder.style.gap = '8px';
@@ -2148,15 +2197,22 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
   // Auto-fill and Calculate buttons container
   const globalAuto = document.createElement('div');
+  globalAuto.className = 'global-controls';
   globalAuto.style.margin = '8px 0';
 
   // Auto-fill button: fills species/moves/stats but does NOT compute scores
   const autofillBtn = document.createElement('button');
-  autofillBtn.textContent = 'Auto-fill team against each trainer';
+  autofillBtn.className = 'btn btn-primary';
+  autofillBtn.textContent = 'Auto-fill team';
+  autofillBtn.title = 'Auto-fill team against each trainer';
+  autofillBtn.setAttribute('aria-label', 'Auto-fill team against each trainer');
 
   // Calculate button: initially disabled until autofill runs
   const calcBtn = document.createElement('button');
+  calcBtn.className = 'btn btn-secondary';
   calcBtn.textContent = 'Calculate team score';
+  calcBtn.title = 'Calculate team score';
+  calcBtn.setAttribute('aria-label', 'Calculate team score');
   calcBtn.disabled = true;
 
   // progress element and team score banner (shared)
@@ -2206,6 +2262,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       const slotControls = trainerSlotControls.get(t.name);
       if (!slotControls) continue;
       const battleLevel = computeBattleLevel(t);
+      const playerLevelDefault = computePlayerDefaultLevel(t);
       for (let i=0;i<slotControls.length;i++){
         const ctrl = slotControls[i];
         const plannedName = planned[i];
@@ -2217,23 +2274,29 @@ document.addEventListener('DOMContentLoaded', async ()=>{
           if (ctrl.moveSelects) ctrl.moveSelects.forEach(mi=>mi.value='');
           continue;
         }
-        const chosenToken = await devolveSpeciesToLegalAtLevel(plannedName, battleLevel);
+        const chosenToken = await devolveSpeciesToLegalAtLevel(plannedName, playerLevelDefault);
         const displayName = prettySpecies(chosenToken).toLowerCase();
         ctrl.spInput.value = displayName;
         if (typeof ctrl.setSlotPreview === 'function') ctrl.setSlotPreview(displayName); else {
           const num = getSpriteNumberForSpeciesName(displayName);
           if (num) ctrl.preview.src = `src/Sprites/Frame1Front/${num}.png`; else ctrl.preview.src = '';
         }
-        ctrl.lvInput.value = battleLevel;
-        const levelMoves = (lvlSets[chosenToken] || []).filter(m=>m.level <= battleLevel).map(m=>m.move);
+        ctrl.lvInput.value = playerLevelDefault;
+        const levelMoves = (lvlSets[chosenToken] || []).filter(m=>m.level <= playerLevelDefault).map(m=>m.move);
         const tmMoves = (tmSets[chosenToken] || []);
         const si = await getSpeciesInfoByName(displayName);
         const types = (si && si.info && si.info.types) ? si.info.types : [];
         const availableTMs = getAvailableTMsForTrainer(t);
         const candidates = {};
-        for (const mv of levelMoves) if (!isStatusMove(mv)) candidates[mv]=true;
-        for (const mv of tmMoves) if (!isStatusMove(mv)){
-          if (availableTMs === null || availableTMs.has(mv)) candidates[mv]=true;
+        for (const mv of levelMoves) {
+          const up = String(mv).toUpperCase();
+          if (!isStatusMove(mv) && !up.includes('FOCUS_PUNCH') && !up.includes('HYPER_BEAM') && !up.includes('HYPERBEAM')) candidates[mv]=true;
+        }
+        for (const mv of tmMoves) {
+          const up = String(mv).toUpperCase();
+          if (!isStatusMove(mv) && !up.includes('FOCUS_PUNCH') && !up.includes('HYPER_BEAM') && !up.includes('HYPERBEAM')){
+            if (availableTMs === null || availableTMs.has(mv)) candidates[mv]=true;
+          }
         }
         const candArr = Object.keys(candidates).map(mv=>{
           const power = MOVE_POWER[mv] || 50;

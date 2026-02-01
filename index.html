@@ -49,12 +49,27 @@
   .trainer-info-row > div{min-width:140px;flex:0 0 140px}
 }
 
+/* Builder row (user Pokémon slots) — mirror trainer-info-row behavior for mobile */
+.trainer-builder-row{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+@media (max-width:600px){
+	.trainer-builder-row{display:flex;overflow-x:auto;gap:8px;padding-bottom:6px}
+	.trainer-builder-row > div{min-width:140px;flex:0 0 140px}
+}
+
 /* Stabilize trainer mon cards: ensure moves remain inside the card */
 .trainer-mon-card{display:flex;flex-direction:column;min-height:220px;box-sizing:border-box;padding:8px;overflow:hidden}
 .trainer-mon-card img{align-self:center}
 .trainer-mon-card .trainer-stats{margin-top:6px;min-height:20px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .trainer-mon-card .moves-grid{margin-top:auto;display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .trainer-mon-card .moves-grid > div{min-height:36px;max-height:44px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:6px}
+
+/* Global control buttons */
+.global-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.btn{padding:10px 14px;border-radius:8px;border:1px solid #dfe7ef;background:#fff;font-weight:700;font-size:14px;cursor:pointer}
+.btn.btn-primary{background:var(--accent);color:#fff;border-color:rgba(0,0,0,0.06);box-shadow:0 6px 14px rgba(43,108,176,0.12)}
+.btn.btn-primary:hover{filter:brightness(.97)}
+.btn.btn-secondary{background:#fff;color:#222;border-color:#e6eef7}
+.btn:disabled{opacity:0.6;cursor:not-allowed}
 
 		</style>
 	</head>
