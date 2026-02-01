@@ -1591,224 +1591,7 @@ function createTrainerCard(trainer, speciesList){
   scoreEl.style.fontWeight = '600';
   scoreEl.textContent = 'Score: —';
   h.appendChild(scoreEl);
-  // per-trainer calculate button
-  const calcBtn = document.createElement('button');
-  calcBtn.textContent = 'Calculate vs Trainer';
-  calcBtn.style.marginLeft = '8px';
-  calcBtn.style.fontSize = '12px';
-  calcBtn.addEventListener('click', async ()=>{
-    // build our team from this card's slotControls
-    const slotCtrls = slotControls; // captured variable (populated below)
-    const teamMons = [];
-    for (const ctrl of slotCtrls){
-      try{
-        if (!ctrl || !ctrl.spInput) continue;
-        // ensure computed stats are up-to-date
-        if (typeof ctrl.computeAndRenderSlotStats === 'function') await ctrl.computeAndRenderSlotStats();
-        const species = ctrl.spInput.value && ctrl.spInput.value.trim();
-        if (!species) continue;
-        const lvl = parseInt(ctrl.lvInput.value,10) || 50;
-        let stats = ctrl.spInput.computedStats || null;
-        const moveset = (ctrl.moveSelects || []).map(s=>s.value).filter(Boolean);
-        // Auto-apply Dynamo badge to player's mons for this trainer if trainer segment > 3
-        try{
-          const seg = trainerNameToSegment(trainer) || approximateSegmentForLevel(trainer.maxLevel || trainer.level || 50);
-          if (seg && seg > 3 && stats && typeof stats.spe === 'number'){
-            // preserve pre-boost speed
-            stats = Object.assign({}, stats);
-            stats.speBeforeDynamo = stats.spe;
-            stats.spe = Math.floor(stats.spe * 1.1);
-            teamMons.push({ species, level: lvl, statsFinal: stats, moveset, dynamoApplied: true });
-            continue;
-          }
-        }catch(e){ /* ignore */ }
-        teamMons.push({ species, level: lvl, statsFinal: stats, moveset });
-      }catch(e){ /* ignore slot errors */ }
-    }
-    if (teamMons.length === 0){ alert('No team mons defined in this trainer builder.'); return; }
-
-    // build trainer party states (will prefer precomputed stats in JSON)
-    const partyStates = await buildTrainerPartyStates(trainer);
-
-    // compute matrix
-    const matrix = [];
-    for (let ri=0; ri<teamMons.length; ri++){
-      const row = [];
-      for (let ci=0; ci<partyStates.length; ci++){
-        const res = await computePairScore(teamMons[ri], partyStates[ci]);
-        row.push(res);
-      }
-      matrix.push(row);
-    }
-
-    // render matrix
-    let existing = card.querySelector('.matchup-matrix');
-    if (existing) existing.remove();
-    const wrap = document.createElement('div'); wrap.className = 'matchup-matrix'; wrap.style.marginTop = '8px'; wrap.style.borderTop='1px solid #f0f0f0'; wrap.style.paddingTop='8px';
-    const table = document.createElement('table'); table.style.width='100%'; table.style.borderCollapse='collapse';
-    const thead = document.createElement('thead');
-    const hdrRow = document.createElement('tr');
-    const thEmpty = document.createElement('th'); thEmpty.style.textAlign='left'; thEmpty.style.padding='6px'; hdrRow.appendChild(thEmpty);
-    for (const en of partyStates){ const th = document.createElement('th'); th.textContent = prettySpecies(en.species) + ` (Lv ${en.level})`; th.style.padding='6px'; hdrRow.appendChild(th); }
-    thead.appendChild(hdrRow); table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    for (let ri=0; ri<matrix.length; ri++){
-      const tr = document.createElement('tr');
-      const nameCell = document.createElement('td'); nameCell.textContent = prettySpecies(teamMons[ri].species); nameCell.style.fontWeight='600'; nameCell.style.padding='6px'; tr.appendChild(nameCell);
-      for (let ci=0; ci<matrix[ri].length; ci++){
-        const cell = document.createElement('td'); cell.style.padding='6px'; cell.style.textAlign='center';
-        const v = matrix[ri][ci]; cell.textContent = v && v.total != null ? String(v.total) : '—';
-        if (v && typeof v === 'object'){
-          cell.style.cursor = 'pointer';
-          cell.title = 'Click to view calculation details';
-          cell.addEventListener('click', (ev)=>{
-            // remove any existing modal
-            const existing = document.querySelector('.pair-breakdown-modal'); if (existing) existing.remove();
-            const modal = document.createElement('div'); modal.className = 'pair-breakdown-modal';
-            modal.style.position = 'fixed'; modal.style.left = '0'; modal.style.top = '0'; modal.style.width = '100%'; modal.style.height = '100%'; modal.style.background = 'rgba(0,0,0,0.35)'; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center'; modal.style.zIndex = '9999';
-
-            const box = document.createElement('div'); box.style.background = '#fff'; box.style.borderRadius='8px'; box.style.padding='12px'; box.style.maxWidth='720px'; box.style.width='90%'; box.style.maxHeight='80%'; box.style.overflow='auto';
-            const closeBtn = document.createElement('button'); closeBtn.textContent = 'Close'; closeBtn.style.float='right'; closeBtn.addEventListener('click', ()=> modal.remove());
-            box.appendChild(closeBtn);
-
-            const title = document.createElement('h4'); title.textContent = `${prettySpecies(teamMons[ri].species)} vs ${prettySpecies(partyStates[ci].species)}`; box.appendChild(title);
-
-            // Build a clearer structured breakdown using DOM elements
-            const content = document.createElement('div');
-            content.style.fontSize = '13px';
-            content.style.lineHeight = '1.35';
-
-            // Top summary: bold user/enemy labels
-            const summary = document.createElement('div');
-            summary.style.display = 'flex';
-            summary.style.justifyContent = 'space-between';
-            summary.style.gap = '12px';
-            summary.style.flexWrap = 'wrap';
-
-            const userLabel = document.createElement('div');
-            const userStrong = document.createElement('strong');
-            userStrong.textContent = `User: ${prettySpecies(teamMons[ri].species)} (Lv ${teamMons[ri].level})`;
-            userLabel.appendChild(userStrong);
-            summary.appendChild(userLabel);
-
-            const enemyLabel = document.createElement('div');
-            const enemyStrong = document.createElement('strong');
-            enemyStrong.textContent = `Enemy: ${prettySpecies(partyStates[ci].species)} (Lv ${partyStates[ci].level})`;
-            enemyLabel.appendChild(enemyStrong);
-            summary.appendChild(enemyLabel);
-
-            content.appendChild(summary);
-
-            // Key metrics table
-            const metrics = document.createElement('div');
-            metrics.style.marginTop = '8px';
-            const mlist = document.createElement('ul');
-            mlist.style.margin = '6px 0 8px 18px';
-            mlist.style.padding = '0';
-            mlist.style.listStyle = 'disc';
-            const pushMetric = (k,vv)=>{ const it = document.createElement('li'); it.textContent = `${k}: ${vv}`; mlist.appendChild(it); };
-            pushMetric('Total score', v.total);
-            if (v.reason) pushMetric('Reason', v.reason);
-            pushMetric('Offense points', v.offense);
-            pushMetric('Defense points', v.defense);
-            pushMetric('Speed points', v.speed);
-            // attacker speed before/after
-            try{
-              const tm = teamMons[ri];
-              if (tm){
-                const boosted = (tm.statsFinal && typeof tm.statsFinal.spe === 'number') ? tm.statsFinal.spe : null;
-                const before = (tm.statsFinal && typeof tm.statsFinal.speBeforeDynamo === 'number') ? tm.statsFinal.speBeforeDynamo : null;
-                if (before != null && boosted != null && tm.dynamoApplied){ pushMetric('Attacker speed', `${before} -> ${boosted} (Dynamo ×1.10 applied)`); }
-                else if (boosted != null) pushMetric('Attacker speed', boosted);
-              }
-            }catch(e){}
-            if (v.hitsToKOUser != null) pushMetric('Hits to KO (user -> enemy)', v.hitsToKOUser);
-            if (v.hitsToKOEnemy != null) pushMetric('Hits to KO (enemy -> user)', v.hitsToKOEnemy);
-            if (v.userExpected != null) pushMetric('User expected damage per best move', v.userExpected.toFixed(2));
-            if (v.enemyExpected != null) pushMetric('Enemy expected damage per best move', v.enemyExpected.toFixed(2));
-            if (v.userBestMove) pushMetric('User best move', `${v.userBestMove.id} (expected ${v.userBestMove.expected || 0}${v.userBestMove.max ? `, max ${v.userBestMove.max}` : ''})`);
-            // enemy best move name
-            if (v.enemyBestMove) pushMetric('Enemy best move', v.enemyBestMove);
-            content.appendChild(mlist);
-
-            // Helper to append a detailed breakdown block
-            const appendBreakdown = (titleText, dr, showMoveName)=>{
-              const block = document.createElement('div'); block.style.marginTop = '10px';
-              const t = document.createElement('div'); t.style.fontWeight='700'; t.textContent = titleText; block.appendChild(t);
-              const p = document.createElement('pre'); p.style.whiteSpace='pre-wrap'; p.style.fontSize='12px'; p.style.margin='6px 0';
-              const lines = [];
-              if (showMoveName && dr && dr.move) lines.push(`Move: ${dr.move}`);
-              if (dr) {
-                lines.push(`Power: ${dr.power}`);
-                if (dr.type) lines.push(`Type: ${dr.type}`);
-                if (dr.category) lines.push(`Category: ${dr.category}`);
-                // Attacker stats: show both attack and special attack for clarity
-                if (dr.attacker){
-                  if (dr.category === 'physical') lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, Level=${dr.attacker.level}`);
-                  else if (dr.category === 'special') lines.push(`Attacker stats used: SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`);
-                  else lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`);
-                }
-                // Defender stats: only show the relevant defense based on move category
-                if (dr.defender){
-                  if (dr.category === 'physical') lines.push(`Defender stats used: Def=${dr.defender.defStat}, HP=${dr.defender.hp}`);
-                  else if (dr.category === 'special') lines.push(`Defender stats used: SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`);
-                  else lines.push(`Defender stats used: Def=${dr.defender.defStat}, SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`);
-                }
-                lines.push(`Raw base (game formula): ${dr.rawBase}`);
-                lines.push(`STAB: ${dr.stab}`);
-                lines.push(`Effectiveness: ${dr.effectiveness}`);
-                lines.push(`Combined modifier (STAB * effectiveness): ${dr.modifier.toFixed(3)}`);
-                if (dr.badgesApplied && dr.badgesApplied.length) lines.push(`Badge multiplier: ${dr.badgeMultiplier.toFixed(3)} (applied: ${dr.badgesApplied.join(', ')})`);
-                lines.push(`True base after modifiers (floored): ${dr.trueBase}`);
-                lines.push(`Rolls (85..100): ${dr.rolls.join(', ')}`);
-                lines.push(`min: ${dr.min}, max: ${dr.max}, expected (mean): ${dr.expected.toFixed(2)}`);
-              }
-              p.textContent = lines.join('\n'); block.appendChild(p); content.appendChild(block);
-            };
-
-            // Append user and enemy breakdowns
-            if (v.userBestMove && v.userBestMove.dr){
-              appendBreakdown('User best move damage breakdown', v.userBestMove.dr, true);
-            }
-            if (v.enemyBestDr){
-              // attach move token if available on result
-              if (v.enemyBestMove) v.enemyBestDr.move = v.enemyBestMove;
-              appendBreakdown('Enemy best move damage breakdown', v.enemyBestDr, true);
-            }
-
-            box.appendChild(content);
-            modal.appendChild(box);
-            modal.addEventListener('click', (evt)=>{ if (evt.target === modal) modal.remove(); });
-            document.body.appendChild(modal);
-          });
-        }
-        tr.appendChild(cell);
-      }
-      tbody.appendChild(tr);
-    }
-
-    // best score row (per enemy, pick highest among our mons)
-    const bestRow = document.createElement('tr');
-    const bestLabel = document.createElement('td'); bestLabel.textContent = 'Best Score'; bestLabel.style.fontWeight='700'; bestLabel.style.padding='6px'; bestRow.appendChild(bestLabel);
-    const bests = [];
-    for (let ci=0; ci<partyStates.length; ci++){
-      let best = -Infinity; for (let ri=0; ri<matrix.length; ri++){ const v = matrix[ri][ci]; if (v && v.total > best) best = v.total; }
-      if (!isFinite(best) || best === -Infinity) best = '—'; bests.push(best);
-      const bc = document.createElement('td'); bc.style.padding='6px'; bc.style.textAlign='center'; bc.textContent = (best==='—')? '—' : String(best); bestRow.appendChild(bc);
-    }
-    tbody.appendChild(bestRow);
-
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-
-    // compute average best score
-    const numericBests = bests.filter(x=>typeof x === 'number');
-    const avg = numericBests.length ? (numericBests.reduce((a,b)=>a+b,0)/numericBests.length) : null;
-    if (avg != null){ scoreEl.textContent = `Score: ${avg.toFixed(2)}/10`; trainerScoreEls.set(trainer.name, scoreEl); }
-
-    card.appendChild(wrap);
-  });
-  h.appendChild(calcBtn);
+  // per-trainer calculate button removed — global Calculate will compute and render per-trainer matrices
   // register score element for external updates
   trainerScoreEls.set(trainer.name, scoreEl);
   card.appendChild(h);
@@ -1832,11 +1615,22 @@ function createTrainerCard(trainer, speciesList){
     const id = prettyId(p.species);
     const speciesName = prettySpecies(p.species);
     const info = document.createElement('div');
+    info.className = 'trainer-mon-card';
     info.style.border = '1px solid #eee';
-    info.style.padding = '6px';
+    info.style.padding = '8px';
     info.style.borderRadius = '6px';
     info.style.background = '#fff';
     info.style.minWidth = '0';
+    info.style.boxSizing = 'border-box';
+    info.style.display = 'flex';
+    info.style.flexDirection = 'column';
+    info.style.overflow = 'hidden';
+
+    // sprite wrapper (gender symbol will be placed inline next to nature)
+    const spriteWrap = document.createElement('div');
+    spriteWrap.style.position = 'relative';
+    spriteWrap.style.width = '64px';
+    spriteWrap.style.margin = '0 auto 6px';
 
     const img = document.createElement('img');
     img.alt = speciesName;
@@ -1845,7 +1639,6 @@ function createTrainerCard(trainer, speciesList){
     img.style.objectFit = 'contain';
     img.style.background = '#f0f0f0';
     img.style.display = 'block';
-    img.style.marginBottom = '6px';
     // choose sprite based on species numeric mapping (apply Gen3 offset)
     const spriteNum = getSpriteNumberForSpeciesName(speciesName);
     if (spriteNum) {
@@ -1853,84 +1646,64 @@ function createTrainerCard(trainer, speciesList){
     } else {
       img.src = `src/assets/sprites/${id}.png`;
     }
-    info.appendChild(img);
+    spriteWrap.appendChild(img);
+
+    // compute trainer gender inference for inline use (no decorative circle)
+    function inferTrainerGender(name){
+      if (!name) return 'male';
+      const s = name.toLowerCase();
+      if (s.includes('tateandliza') || s.includes('tateandliza1')) return 'mixed';
+      const female = ['roxanne','flannery','winona','phoebe','glacia','liza','dawn','candice'];
+      const male = ['brawly','wattson','norman','juan','sidney','drake','wallace','tate','brendan','steven','may'];
+      for (const f of female) if (s.includes(f)) return 'female';
+      for (const m of male) if (s.includes(m)) return 'male';
+      return 'male';
+    }
+    const _speciesKey = speciesName.toLowerCase().replace(/[^a-z]/g,'');
+    const _genderless = new Set(['claydol','lunatone','solrock']);
+    let _trainerGender = null;
+    if (!_genderless.has(_speciesKey)){
+      _trainerGender = inferTrainerGender(trainer.name);
+      if (_speciesKey === 'xatu' && trainer.name && trainer.name.toLowerCase().includes('tate')) _trainerGender = 'male';
+    }
+
+    info.appendChild(spriteWrap);
 
     const title = document.createElement('div');
     title.style.fontWeight = '600';
     title.textContent = speciesName + ` (Lv ${p.lvl})`;
-    // add trainer-gender symbol on same line as species title unless species is genderless
-    (function(){
-      function inferTrainerGender(name){
-        if (!name) return 'male';
-        const s = name.toLowerCase();
-        if (s.includes('tateandliza') || s.includes('tateandliza1')) return 'mixed';
-        const female = ['roxanne','flannery','winona','phoebe','glacia','liza','dawn','candice'];
-        const male = ['brawly','wattson','norman','juan','sidney','drake','wallace','tate','brendan','steven','may'];
-        for (const f of female) if (s.includes(f)) return 'female';
-        for (const m of male) if (s.includes(m)) return 'male';
-        return 'male';
-      }
-      const genderless = new Set(['claydol','lunatone','solrock']);
-      const speciesKey = speciesName.toLowerCase().replace(/[^a-z]/g,'');
-      if (!genderless.has(speciesKey)){
-        let tg = inferTrainerGender(trainer.name);
-        // special-case: Xatu (on TateAndLiza) should show only male
-        if (speciesKey === 'xatu' && trainer.name && trainer.name.toLowerCase().includes('tate')) tg = 'male';
-        const sym = document.createElement('span');
-        sym.style.display = 'inline-block';
-        sym.style.fontSize = '15px';
-        sym.style.marginLeft = '8px';
-        sym.style.verticalAlign = 'middle';
-        sym.style.fontWeight = '700';
-        sym.style.webkitTextStroke = '0.8px rgba(0,0,0,0.08)';
-        sym.style.textShadow = '0 0 1px rgba(0,0,0,0.12)';
-        if (tg === 'male') { sym.textContent = '♂'; sym.style.color = '#0b63c7'; }
-        else if (tg === 'female') { sym.textContent = '♀'; sym.style.color = '#c21807'; }
-        else { sym.textContent = '♂♀'; sym.style.color = '#444'; }
-        title.appendChild(sym);
-      }
-    })();
     info.appendChild(title);
 
 
     const meta = document.createElement('div');
     meta.className = 'muted';
     meta.style.fontSize = '12px';
-    meta.textContent = `IV: ${p.iv != null ? p.iv : '—'}${p.nature ? ' • ' + p.nature : ''}`;
+    // build inline content: IV, optional nature, and simple gender symbol to the right
+    const ivText = document.createTextNode(`IV: ${p.iv != null ? p.iv : '—'}`);
+    meta.appendChild(ivText);
+    if (p.nature){
+      const natText = document.createTextNode(' • ' + p.nature);
+      meta.appendChild(natText);
+    }
+    if (_trainerGender){
+      const sym = document.createElement('span');
+      sym.textContent = _trainerGender === 'female' ? '♀' : '♂';
+      sym.style.marginLeft = '6px';
+      sym.style.fontSize = '14px';
+      sym.style.verticalAlign = 'middle';
+      sym.style.lineHeight = '1';
+      sym.style.color = _trainerGender === 'female' ? '#c21807' : '#0b63c7';
+      meta.appendChild(sym);
+    }
     info.appendChild(meta);
 
-    // show computed stats for trainer Pokémon (prefer precomputed `p.stats`)
-    const trainerStatsDiv = document.createElement('div');
-    trainerStatsDiv.style.fontSize = '12px';
-    trainerStatsDiv.style.margin = '6px 0';
-    trainerStatsDiv.textContent = 'Stats: —';
-    info.appendChild(trainerStatsDiv);
-    (async ()=>{
-      try{
-        if (p.stats){
-          const s = p.stats;
-          trainerStatsDiv.innerHTML = `HP: ${s.hp} • Atk: ${s.atk} • Def: ${s.def} • SpA: ${s.spa} • SpD: ${s.spd} • Spe: ${s.spe}`;
-        } else {
-          const lvl = p.lvl || p.level || 50;
-          const si2 = await getSpeciesInfoByName(prettySpecies(p.species).toLowerCase()) || await getSpeciesInfoByName(p.species);
-          if (si2 && si2.info && si2.info.baseStats){
-            const b = si2.info.baseStats;
-            const hp = computeStatFromBase(b.hp, p.iv!=null? p.iv:31, 0, lvl, true);
-            const atk = computeStatFromBase(b.atk, p.iv!=null? p.iv:31, 0, lvl, false);
-            const def = computeStatFromBase(b.def, p.iv!=null? p.iv:31, 0, lvl, false);
-            const spa = computeStatFromBase(b.spa, p.iv!=null? p.iv:31, 0, lvl, false);
-            const spd = computeStatFromBase(b.spd, p.iv!=null? p.iv:31, 0, lvl, false);
-            const spe = computeStatFromBase(b.spe, p.iv!=null? p.iv:31, 0, lvl, false);
-            trainerStatsDiv.innerHTML = `HP: ${hp} • Atk: ${atk} • Def: ${def} • SpA: ${spa} • SpD: ${spd} • Spe: ${spe}`;
-          }
-        }
-      }catch(e){ /* ignore */ }
-    })();
+    // Trainer stats are omitted on the trainer cards to keep layout stable.
 
 
 
     // moves: display as 2x2 colored grid
     const movesGrid = document.createElement('div');
+    movesGrid.className = 'moves-grid';
     movesGrid.style.display = 'grid';
     movesGrid.style.gridTemplateColumns = '1fr 1fr';
     movesGrid.style.gap = '6px';
@@ -1941,7 +1714,8 @@ function createTrainerCard(trainer, speciesList){
     const moveCells = [];
     for (let mi=0; mi<4; mi++){
       const cell = document.createElement('div');
-      cell.style.minHeight = '34px';
+      cell.style.minHeight = '36px';
+      cell.style.maxHeight = '44px';
       cell.style.display = 'flex';
       cell.style.flexDirection = 'column';
       cell.style.justifyContent = 'center';
@@ -1950,7 +1724,10 @@ function createTrainerCard(trainer, speciesList){
       cell.style.border = '2px solid #eee';
       cell.style.background = '#fafafa';
       cell.style.fontSize = '12px';
-      cell.style.padding = '4px';
+      cell.style.padding = '6px';
+      cell.style.overflow = 'hidden';
+      cell.style.whiteSpace = 'nowrap';
+      cell.style.textOverflow = 'ellipsis';
       cell.textContent = '';
       movesGrid.appendChild(cell);
       moveCells.push(cell);
@@ -2369,14 +2146,55 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
   // NOTE: clear-saved-state button removed — planned-team is now non-persistent by default.
 
-  // Single Auto-Fill All Trainers button
+  // Auto-fill and Calculate buttons container
   const globalAuto = document.createElement('div');
   globalAuto.style.margin = '8px 0';
-  const globalBtn = document.createElement('button');
-  globalBtn.textContent = 'Auto-Fill All Trainers From Planned Team';
-  globalBtn.addEventListener('click', async ()=>{
-    console.debug('Auto-Fill All Trainers clicked');
-    console.log('Auto-Fill All Trainers clicked');
+
+  // Auto-fill button: fills species/moves/stats but does NOT compute scores
+  const autofillBtn = document.createElement('button');
+  autofillBtn.textContent = 'Auto-fill team against each trainer';
+
+  // Calculate button: initially disabled until autofill runs
+  const calcBtn = document.createElement('button');
+  calcBtn.textContent = 'Calculate team score';
+  calcBtn.disabled = true;
+
+  // progress element and team score banner (shared)
+  const __autoFillProgressEl = document.createElement('div');
+  __autoFillProgressEl.style.marginTop = '6px';
+  __autoFillProgressEl.style.fontSize = '13px';
+  __autoFillProgressEl.style.color = '#333';
+  __autoFillProgressEl.style.display = 'none';
+  const __teamScoreBanner = document.createElement('div');
+  __teamScoreBanner.style.marginTop = '8px';
+  __teamScoreBanner.style.display = 'none';
+  __teamScoreBanner.style.padding = '10px';
+  __teamScoreBanner.style.borderRadius = '8px';
+  __teamScoreBanner.style.background = '#fff';
+  __teamScoreBanner.style.boxShadow = '0 1px 3px rgba(0,0,0,0.06)';
+  __teamScoreBanner.style.alignItems = 'center';
+  __teamScoreBanner.style.gap = '8px';
+  const __teamScoreText = document.createElement('div');
+  __teamScoreText.style.fontSize = '18px';
+  __teamScoreText.style.fontWeight = '700';
+  __teamScoreText.textContent = '';
+  const __teamScoreNote = document.createElement('div');
+  __teamScoreNote.style.fontSize = '13px';
+  __teamScoreNote.style.color = 'var(--muted)';
+  __teamScoreNote.textContent = '';
+  __teamScoreBanner.appendChild(__teamScoreText);
+  __teamScoreBanner.appendChild(__teamScoreNote);
+
+  globalAuto.appendChild(autofillBtn);
+  globalAuto.appendChild(calcBtn);
+  globalAuto.appendChild(__autoFillProgressEl);
+  globalAuto.appendChild(__teamScoreBanner);
+  appContainer.appendChild(globalAuto);
+
+  // Autofill handler: fills trainer slots but does not compute scores
+  autofillBtn.addEventListener('click', async ()=>{
+    console.debug('Auto-fill All Trainers clicked');
+    console.log('Auto-fill All Trainers clicked');
     const trainersList = trainers;
     const lvlSets = await loadLevelUpLearnsetsH();
     const tmSets = await loadTMHMLearnsetsH();
@@ -2459,25 +2277,174 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         }
       }catch(e){}
     }
-    // after auto-fill, recompute scores for visible trainer cards
-    (async ()=>{
-      let planned = [];
-      try{ planned = getPlannedTeam(); }catch(e){ planned = []; }
-      for (const t of trainersList){
-        try{
-          const sc = await computeTrainerScore(t, planned);
-          const el = trainerScoreEls.get(t.name);
-          if (el){
-            if (sc === 0) el.textContent = `Score: —`;
-            else el.textContent = `Score: ${sc.toFixed(2)}/10`;
-          }
-          console.debug('Auto-Fill: updated score for', t.name, '->', sc);
-        }catch(err){ console.debug('Auto-Fill: error computing score for', t.name, err); }
-      }
-    })();
+    // enable the Calculate button now that autofill ran
+    try{ calcBtn.disabled = false; }catch(e){}
   });
-  globalAuto.appendChild(globalBtn);
-  appContainer.appendChild(globalAuto);
+
+  // Calculate handler: run sequential calculations and show progress + team banner
+  calcBtn.addEventListener('click', async ()=>{
+    try{ __teamScoreBanner.style.display = 'none'; __teamScoreText.textContent = ''; __teamScoreNote.textContent = ''; }catch(e){}
+    __autoFillProgressEl.style.display = 'block';
+    const trainersList = trainers;
+    const panels = Array.from(document.querySelectorAll('#trainersContainer > .panel'));
+    const total = trainersList.length;
+    // helper: wait for a selector to appear within a parent element
+    const waitForWithin = async (parent, selector, timeoutMs=5000) => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs){
+        try{ if (parent.querySelector(selector)) return parent.querySelector(selector); }catch(e){}
+        await new Promise(r=>setTimeout(r, 120));
+      }
+      return null;
+    };
+    try{
+      let idx = 0;
+      for (const t of trainersList){
+        idx++;
+        try{
+          __autoFillProgressEl.textContent = `Calculating trainer ${idx}/${total}: ${ (t.name||'').replace(/1$/,'') }`;
+          // locate the trainer card by matching the H3 header text
+          let card = null;
+          for (const p of panels){
+            const h = p.querySelector('h3'); if (!h) continue;
+            if (h.textContent && h.textContent.trim().startsWith((t.name||'').replace(/1$/,''))) { card = p; break; }
+          }
+          if (!card) continue;
+          // Build team from this card's slot controls
+          const slotCtrls = trainerSlotControls.get(t.name) || [];
+          const teamMons = [];
+          for (const ctrl of slotCtrls){
+            try{
+              if (!ctrl || !ctrl.spInput) continue;
+              if (typeof ctrl.computeAndRenderSlotStats === 'function') await ctrl.computeAndRenderSlotStats();
+              const species = ctrl.spInput.value && ctrl.spInput.value.trim();
+              if (!species) continue;
+              const lvl = parseInt(ctrl.lvInput.value,10) || 50;
+              let stats = ctrl.spInput.computedStats || null;
+              const moveset = (ctrl.moveSelects || []).map(s=>s.value).filter(Boolean);
+              try{
+                const seg = trainerNameToSegment(t) || approximateSegmentForLevel(t.maxLevel || t.level || 50);
+                if (seg && seg > 3 && stats && typeof stats.spe === 'number'){
+                  stats = Object.assign({}, stats);
+                  stats.speBeforeDynamo = stats.spe;
+                  stats.spe = Math.floor(stats.spe * 1.1);
+                  teamMons.push({ species, level: lvl, statsFinal: stats, moveset, dynamoApplied: true });
+                  continue;
+                }
+              }catch(e){}
+              teamMons.push({ species, level: lvl, statsFinal: stats, moveset });
+            }catch(e){ /* ignore slot errors */ }
+          }
+          if (teamMons.length === 0){
+            const el = trainerScoreEls.get(t.name);
+            if (el) el.textContent = 'Score: —';
+            continue;
+          }
+          // build trainer party states
+          const partyStates = await buildTrainerPartyStates(t);
+          // compute matrix
+          const matrix = [];
+          for (let ri=0; ri<teamMons.length; ri++){
+            const row = [];
+            for (let ci=0; ci<partyStates.length; ci++){
+              const res = await computePairScore(teamMons[ri], partyStates[ci]);
+              row.push(res);
+            }
+            matrix.push(row);
+          }
+          // render matrix into card
+          try{
+            let existing = card.querySelector('.matchup-matrix'); if (existing) existing.remove();
+            const wrap = document.createElement('div'); wrap.className = 'matchup-matrix'; wrap.style.marginTop = '8px'; wrap.style.borderTop='1px solid #f0f0f0'; wrap.style.paddingTop='8px';
+            const table = document.createElement('table'); table.style.width='100%'; table.style.borderCollapse='collapse';
+            const thead = document.createElement('thead');
+            const hdrRow = document.createElement('tr');
+            const thEmpty = document.createElement('th'); thEmpty.style.textAlign='left'; thEmpty.style.padding='6px'; hdrRow.appendChild(thEmpty);
+            for (const en of partyStates){ const th = document.createElement('th'); th.textContent = prettySpecies(en.species) + ` (Lv ${en.level})`; th.style.padding='6px'; hdrRow.appendChild(th); }
+            thead.appendChild(hdrRow); table.appendChild(thead);
+            const tbody = document.createElement('tbody');
+            for (let ri=0; ri<matrix.length; ri++){
+              const tr = document.createElement('tr');
+              const nameCell = document.createElement('td'); nameCell.textContent = prettySpecies(teamMons[ri].species); nameCell.style.fontWeight='600'; nameCell.style.padding='6px'; tr.appendChild(nameCell);
+              for (let ci=0; ci<matrix[ri].length; ci++){
+                const cell = document.createElement('td'); cell.style.padding='6px'; cell.style.textAlign='center';
+                const v = matrix[ri][ci]; cell.textContent = v && v.total != null ? String(v.total) : '—';
+                if (v && typeof v === 'object'){
+                  cell.style.cursor = 'pointer';
+                  cell.title = 'Click to view calculation details';
+                  cell.addEventListener('click', (ev)=>{
+                    const existing = document.querySelector('.pair-breakdown-modal'); if (existing) existing.remove();
+                    const modal = document.createElement('div'); modal.className = 'pair-breakdown-modal';
+                    modal.style.position = 'fixed'; modal.style.left = '0'; modal.style.top = '0'; modal.style.width = '100%'; modal.style.height = '100%'; modal.style.background = 'rgba(0,0,0,0.35)'; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center'; modal.style.zIndex = '9999';
+                    const box = document.createElement('div'); box.style.background = '#fff'; box.style.borderRadius='8px'; box.style.padding='12px'; box.style.maxWidth='720px'; box.style.width='90%'; box.style.maxHeight='80%'; box.style.overflow='auto';
+                    const closeBtn = document.createElement('button'); closeBtn.textContent = 'Close'; closeBtn.style.float='right'; closeBtn.addEventListener('click', ()=> modal.remove()); box.appendChild(closeBtn);
+                    const title = document.createElement('h4'); title.textContent = `${prettySpecies(teamMons[ri].species)} vs ${prettySpecies(partyStates[ci].species)}`; box.appendChild(title);
+                    const content = document.createElement('div'); content.style.fontSize = '13px'; content.style.lineHeight = '1.35';
+                    const summary = document.createElement('div'); summary.style.display = 'flex'; summary.style.justifyContent = 'space-between'; summary.style.gap = '12px'; summary.style.flexWrap = 'wrap';
+                    const userLabel = document.createElement('div'); const userStrong = document.createElement('strong'); userStrong.textContent = `User: ${prettySpecies(teamMons[ri].species)} (Lv ${teamMons[ri].level})`; userLabel.appendChild(userStrong); summary.appendChild(userLabel);
+                    const enemyLabel = document.createElement('div'); const enemyStrong = document.createElement('strong'); enemyStrong.textContent = `Enemy: ${prettySpecies(partyStates[ci].species)} (Lv ${partyStates[ci].level})`; enemyLabel.appendChild(enemyStrong); summary.appendChild(enemyLabel);
+                    content.appendChild(summary);
+                    const mlist = document.createElement('ul'); mlist.style.margin = '6px 0 8px 18px'; mlist.style.padding = '0'; mlist.style.listStyle = 'disc';
+                    const pushMetric = (k,vv)=>{ const it = document.createElement('li'); it.textContent = `${k}: ${vv}`; mlist.appendChild(it); };
+                    pushMetric('Total score', v.total);
+                    if (v.reason) pushMetric('Reason', v.reason);
+                    pushMetric('Offense points', v.offense);
+                    pushMetric('Defense points', v.defense);
+                    pushMetric('Speed points', v.speed);
+                    try{ const tm = teamMons[ri]; if (tm){ const boosted = (tm.statsFinal && typeof tm.statsFinal.spe === 'number') ? tm.statsFinal.spe : null; const before = (tm.statsFinal && typeof tm.statsFinal.speBeforeDynamo === 'number') ? tm.statsFinal.speBeforeDynamo : null; if (before != null && boosted != null && tm.dynamoApplied){ pushMetric('Attacker speed', `${before} -> ${boosted} (Dynamo ×1.10 applied)`); } else if (boosted != null) pushMetric('Attacker speed', boosted); } }catch(e){}
+                    if (v.hitsToKOUser != null) pushMetric('Hits to KO (user -> enemy)', v.hitsToKOUser);
+                    if (v.hitsToKOEnemy != null) pushMetric('Hits to KO (enemy -> user)', v.hitsToKOEnemy);
+                    if (v.userExpected != null) pushMetric('User expected damage per best move', v.userExpected.toFixed(2));
+                    if (v.enemyExpected != null) pushMetric('Enemy expected damage per best move', v.enemyExpected.toFixed(2));
+                    if (v.userBestMove) pushMetric('User best move', `${v.userBestMove.id} (expected ${v.userBestMove.expected || 0}${v.userBestMove.max ? `, max ${v.userBestMove.max}` : ''})`);
+                    if (v.enemyBestMove) pushMetric('Enemy best move', v.enemyBestMove);
+                    content.appendChild(mlist);
+                    const appendBreakdown = (titleText, dr, showMoveName)=>{ const block = document.createElement('div'); block.style.marginTop = '10px'; const t = document.createElement('div'); t.style.fontWeight='700'; t.textContent = titleText; block.appendChild(t); const p = document.createElement('pre'); p.style.whiteSpace='pre-wrap'; p.style.fontSize='12px'; p.style.margin='6px 0'; const lines = []; if (showMoveName && dr && dr.move) lines.push(`Move: ${dr.move}`); if (dr) { lines.push(`Power: ${dr.power}`); if (dr.type) lines.push(`Type: ${dr.type}`); if (dr.category) lines.push(`Category: ${dr.category}`); if (dr.attacker){ if (dr.category === 'physical') lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, Level=${dr.attacker.level}`); else if (dr.category === 'special') lines.push(`Attacker stats used: SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`); else lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`); } if (dr.defender){ if (dr.category === 'physical') lines.push(`Defender stats used: Def=${dr.defender.defStat}, HP=${dr.defender.hp}`); else if (dr.category === 'special') lines.push(`Defender stats used: SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`); else lines.push(`Defender stats used: Def=${dr.defender.defStat}, SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`); } lines.push(`Raw base (game formula): ${dr.rawBase}`); lines.push(`STAB: ${dr.stab}`); lines.push(`Effectiveness: ${dr.effectiveness}`); lines.push(`Combined modifier (STAB * effectiveness): ${dr.modifier.toFixed(3)}`); if (dr.badgesApplied && dr.badgesApplied.length) lines.push(`Badge multiplier: ${dr.badgeMultiplier.toFixed(3)} (applied: ${dr.badgesApplied.join(', ')})`); lines.push(`True base after modifiers (floored): ${dr.trueBase}`); lines.push(`Rolls (85..100): ${dr.rolls.join(', ')}`); lines.push(`min: ${dr.min}, max: ${dr.max}, expected (mean): ${dr.expected.toFixed(2)}`); } p.textContent = lines.join('\n'); block.appendChild(p); content.appendChild(block); };
+                    if (v.userBestMove && v.userBestMove.dr) appendBreakdown('User best move damage breakdown', v.userBestMove.dr, true);
+                    if (v.enemyBestDr){ if (v.enemyBestMove) v.enemyBestDr.move = v.enemyBestMove; appendBreakdown('Enemy best move damage breakdown', v.enemyBestDr, true); }
+                    box.appendChild(content); modal.appendChild(box); modal.addEventListener('click', (evt)=>{ if (evt.target === modal) modal.remove(); }); document.body.appendChild(modal);
+                  });
+                }
+                tr.appendChild(cell);
+              }
+              tbody.appendChild(tr);
+            }
+            const bestRow = document.createElement('tr'); const bestLabel = document.createElement('td'); bestLabel.textContent = 'Best Score'; bestLabel.style.fontWeight='700'; bestLabel.style.padding='6px'; bestRow.appendChild(bestLabel);
+            const bests = [];
+            for (let ci=0; ci<partyStates.length; ci++){ let best = -Infinity; for (let ri=0; ri<matrix.length; ri++){ const v = matrix[ri][ci]; if (v && v.total > best) best = v.total; } if (!isFinite(best) || best === -Infinity) best = '—'; bests.push(best); const bc = document.createElement('td'); bc.style.padding='6px'; bc.style.textAlign='center'; bc.textContent = (best==='—')? '—' : String(best); bestRow.appendChild(bc); }
+            tbody.appendChild(bestRow);
+            table.appendChild(tbody); wrap.appendChild(table); card.appendChild(wrap);
+            const numericBests = bests.filter(x=>typeof x === 'number'); const avg = numericBests.length ? (numericBests.reduce((a,b)=>a+b,0)/numericBests.length) : null;
+            const scoreEl = trainerScoreEls.get(t.name);
+            if (avg != null && scoreEl){ scoreEl.textContent = `Score: ${avg.toFixed(2)}/10`; trainerScoreEls.set(t.name, scoreEl); }
+          }catch(e){ console.debug('Auto-Fill: failed to render matrix for', t.name, e); }
+        }catch(err){ console.debug('Auto-Fill: error computing trainer via button for', t.name, err); }
+      }
+    }finally{
+      __autoFillProgressEl.style.display = 'none';
+      __autoFillProgressEl.textContent = '';
+      // compute an aggregate team score from visible trainer score elements
+      try{
+        const nums = [];
+        for (const t of trainersList){
+          const el = trainerScoreEls.get(t.name);
+          if (!el) continue;
+          const m = String(el.textContent || '').match(/Score:\s*([0-9.]+)\/10/);
+          if (m && m[1]) nums.push(parseFloat(m[1]));
+        }
+        if (nums.length){
+          const avg = nums.reduce((a,b)=>a+b,0)/nums.length;
+          __teamScoreText.textContent = `Team score: ${avg.toFixed(2)}/10`;
+          __teamScoreNote.textContent = 'Set exact moves below and recalibrate score per trainer for a more precise score.';
+          __teamScoreBanner.style.display = 'flex';
+        } else {
+          __teamScoreText.textContent = 'Team score: —';
+          __teamScoreNote.textContent = 'No numeric scores were produced. Try recalculating an individual trainer.';
+          __teamScoreBanner.style.display = 'flex';
+        }
+      }catch(e){ console.debug('Auto-Fill: failed to compute team score banner', e); }
+    }
+  });
 
   // then render trainers below
   for (const t of trainers){
