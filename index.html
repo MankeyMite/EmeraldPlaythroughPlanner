@@ -6,17 +6,36 @@
 		<title>Emerald Team Builder — Score Calculator</title>
 		<style>
 			:root{--accent:#2b6cb0;--muted:#666}
-			body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;background:#f6f8fb;color:#111}
-			header{background:var(--accent);color:white;padding:12px 20px}
-			.container{display:grid;grid-template-columns:320px 1fr 360px;gap:16px;padding:16px}
-			.panel{background:white;border-radius:8px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+			body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;background:#f6f8fb;color:#111;-webkit-font-smoothing:antialiased}
+			header{background:var(--accent);color:white;padding:12px 16px}
+			.container{display:grid;grid-template-columns:1fr;gap:12px;padding:12px;max-width:1100px;margin:0 auto}
+			.panel{background:white;border-radius:8px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
 			.team-list{display:flex;flex-direction:column;gap:8px}
 			.scoreboard{overflow:auto}
-			table{width:100%;border-collapse:collapse}
-			th,td{padding:8px;border-bottom:1px solid #eee;text-align:left}
-			th{background:#fafafa;position:sticky;top:0}
-			.controls label{display:block;margin-bottom:6px;font-size:13px;color:var(--muted)}
+			table{width:100%;border-collapse:collapse;display:block;overflow:auto;-webkit-overflow-scrolling:touch}
+			th,td{padding:10px;border-bottom:1px solid #eee;text-align:left;white-space:nowrap}
+			th{background:#fafafa}
+			.controls label{display:block;margin-bottom:8px;font-size:14px;color:var(--muted)}
 			.muted{color:var(--muted);font-size:13px}
+			button, input[type=button], input[type=submit], .panel button{padding:10px 14px;border-radius:6px;border:1px solid #ddd;background:#fff;font-size:15px}
+			input,select,textarea{font-size:15px}
+			@media (min-width:900px){
+				.container{padding:16px;grid-template-columns:1fr}
+				.panel{padding:16px}
+				header{padding:14px 20px}
+			}
+
+/* Type badge layout tweaks to avoid overlap on small screens */
+.type-wrapper{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.type-wrapper > div{margin:0}
+.type-label{display:block;width:100%;margin-bottom:6px;font-weight:600}
+.type-wrapper .type-pill{white-space:nowrap;flex:0 0 auto;padding:6px 10px;border-radius:14px;font-weight:700;font-size:13px}
+
+/* Reduce pill size on very small screens to avoid overflow */
+@media (max-width:420px){
+	.type-wrapper .type-pill{padding:4px 8px;font-size:12px;border-radius:12px}
+}
+
 		</style>
 	</head>
 	<body>
@@ -25,29 +44,12 @@
 		</header>
 
 		<main class="container">
-			<aside class="panel">
-				<h2 style="margin-top:0;font-size:16px">Team</h2>
-				<div class="team-list" id="teamList">
-					<div class="muted">Add Pokémon to build your team (placeholder)</div>
-				</div>
-				<hr />
-				<div class="controls">
-					<label>Assumptions</label>
-					<label><input type="checkbox" id="assumeNuzlocke" checked /> Hardcore Nuzlocke defaults</label>
-					<label><input type="checkbox" id="allowCrits" /> Crits enabled</label>
-					<label><input type="checkbox" id="allowSetup" /> Allow setup moves</label>
-				</div>
-			</aside>
-
 			<section class="panel">
 				<h2 style="margin-top:0;font-size:16px">Trainers & Team Builder</h2>
 				<div id="trainersContainer"></div>
 			</section>
 
-			<aside class="panel">
-				<h2 style="margin-top:0;font-size:16px">Fight Details</h2>
-				<div id="fightDetails" class="muted">Select a fight or matchup to view details.</div>
-			</aside>
+
 		</main>
 
 		<script type="module" src="src/main.js"></script>

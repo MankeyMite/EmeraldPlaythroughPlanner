@@ -366,7 +366,7 @@ async function loadTMHMLearnsetsH(){
     while((m = re.exec(text))){
       const token = m[1];
       const body = m[2];
-      const moves = Array.from(body.matchAll(/\.([A-Z0-9_]+)\s*=\s*TRUE/g)).map(x=>x[1]);
+      const moves = Array.from(body.matchAll(/\.([A-Z0-9_]+)\s*=\s*TRUE/g)).map(x => ('MOVE_' + x[1]));
       _tmhmLearnsets[token] = moves;
     }
   }catch(e){ }
@@ -492,16 +492,141 @@ window.computeBattleLevel = computeBattleLevel;
 window.devolveSpeciesToLegalAtLevel = devolveSpeciesToLegalAtLevel;
 
 // --- STAB move selection and TM availability windows ---
-let _tmAvailabilityMap = null; // { trainerName: Set([TM_NAME,...]) }
+let _tmAvailabilityMap = null; // optional explicit per-trainer map { trainerName: [MOVE_...] }
+let _tmAvailabilityBySegment = null; // built from src/data/tm_availability.json -> { segmentKey: Set(MOVE_...) }
+let _tmMoveToSegment = null; // map MOVE_TOKEN -> numeric segment order (1..n)
 function setTMAvailabilityMap(map){ _tmAvailabilityMap = map; }
 window.setTMAvailabilityMap = setTMAvailabilityMap;
 
+function segmentNameToOrder(name){
+  if (!name) return 999;
+  const n = String(name).toLowerCase();
+  if (n === 'before_gym_1') return 1;
+  const m = n.match(/before_gym_(\d+)/);
+  if (m) return parseInt(m[1],10);
+  if (n === 'after_gym_8_pre_elite') return 9;
+  if (n === 'post_elite') return 10;
+  // fallback: try to extract trailing digit
+  const mm = n.match(/(\d+)/);
+  return mm ? parseInt(mm[1],10) : 999;
+}
+
+function approximateSegmentForLevel(level){
+  // heuristic mapping of trainer max level -> progression segment
+  const l = parseInt(level||0,10);
+  if (l <= 15) return 1;
+  if (l <= 20) return 2;
+  if (l <= 25) return 3;
+  if (l <= 30) return 4;
+  if (l <= 40) return 5;
+  if (l <= 50) return 6;
+  if (l <= 60) return 7;
+  if (l <= 70) return 8;
+  return 9;
+}
+
+function trainerNameToSegment(trainer){
+  if (!trainer || !trainer.name) return null;
+  const n = trainer.name.toLowerCase();
+  // common gym leader name prefixes -> gym number
+  const mapping = {
+    'roxanne': 1,
+    'brawly': 2,
+    'wattson': 3,
+    'flannery': 4,
+    'norman': 5,
+    'winona': 6,
+    'tateandliza': 7,
+    'tate': 7,
+    'liza': 7,
+    'juan': 8,
+    'sidney': 9,
+    'phoebe': 9,
+    'glacia': 9,
+    'drake': 9,
+    'wallace': 9
+  };
+  for (const key in mapping){ if (n.includes(key)) return mapping[key]; }
+  // fallback: if trainer names include a gym number like 'Roxanne1' attempt to extract numeric suffix
+  const m = n.match(/(\D+)(\d+)$/);
+  if (m){ const namePart = m[1]; for (const key in mapping){ if (namePart.includes(key)) return mapping[key]; } }
+  return null;
+}
+
+async function loadTMAvailabilityJSON(){
+  if (_tmAvailabilityBySegment) return _tmAvailabilityBySegment;
+  _tmAvailabilityBySegment = {};
+  _tmMoveToSegment = {};
+  try{
+    const res = await fetchNoCache('src/data/tm_availability.json');
+    if (!res.ok) return _tmAvailabilityBySegment;
+    const arr = await res.json();
+    for (const e of arr){
+      const seg = e.earliest || 'post_elite';
+      if (!_tmAvailabilityBySegment[seg]) _tmAvailabilityBySegment[seg] = new Set();
+      if (e.move) {
+        _tmAvailabilityBySegment[seg].add(e.move);
+        try{ const ord = segmentNameToOrder(seg); const cur = _tmMoveToSegment[e.move]; if (!cur || ord < cur) _tmMoveToSegment[e.move] = ord; }catch(e){}
+      } else if (e.item && e.move) {
+        _tmAvailabilityBySegment[seg].add(e.move);
+        try{ const ord = segmentNameToOrder(seg); const cur = _tmMoveToSegment[e.move]; if (!cur || ord < cur) _tmMoveToSegment[e.move] = ord; }catch(e){}
+      }
+    }
+  }catch(e){ /* ignore */ }
+  return _tmAvailabilityBySegment;
+}
+
+function collectAllowedTMsUpToSegment(segOrder){
+  // combine all segment sets whose order <= segOrder
+  const out = new Set();
+  if (!_tmAvailabilityBySegment) return out;
+  for (const seg in _tmAvailabilityBySegment){
+    try{
+      const ord = segmentNameToOrder(seg);
+      if (ord <= segOrder){
+        for (const mv of _tmAvailabilityBySegment[seg]) out.add(mv);
+      }
+    }catch(e){}
+  }
+  return out;
+}
+
+// Return numeric segment assigned to a MOVE token (1..n), or null if unknown
+function getTMMoveSegment(moveToken){
+  if (!_tmMoveToSegment) return null;
+  return _tmMoveToSegment[moveToken] || null;
+}
+window.getTMMoveSegment = getTMMoveSegment;
+
+// Compute numeric segment for a trainer (prefer explicit name mapping, fall back to level heuristic)
+function getTrainerSegmentNumber(trainer){
+  const explicit = trainerNameToSegment(trainer || {});
+  if (explicit) return explicit;
+  const lvl = computeBattleLevel(trainer || {});
+  return approximateSegmentForLevel(lvl);
+}
+window.getTrainerSegmentNumber = getTrainerSegmentNumber;
+
+// expose the full move->segment map for debugging
+function getTMMoveToSegmentMap(){ return _tmMoveToSegment || {}; }
+window.getTMMoveToSegmentMap = getTMMoveToSegmentMap;
+
 function getAvailableTMsForTrainer(trainer){
+  // explicit per-trainer override wins
   if (_tmAvailabilityMap && trainer && trainer.name && _tmAvailabilityMap[trainer.name]){
     return new Set(_tmAvailabilityMap[trainer.name]);
   }
-  // default: all TMs available
-  return null;
+  // otherwise compute from tm_availability.json by estimating progression segment from trainer level
+  try{
+    // prefer explicit trainer name -> gym segment mapping when available
+    const explicitSeg = trainerNameToSegment(trainer || {});
+    const battleLevel = computeBattleLevel(trainer || {});
+    const seg = explicitSeg || approximateSegmentForLevel(battleLevel);
+    const allowed = collectAllowedTMsUpToSegment(seg);
+    // if empty set => treat as allowing all (so legacy behavior preserved)
+    if (allowed.size === 0) return null;
+    return allowed;
+  }catch(e){ return null; }
 }
 
 // small heuristic move power and move->type map for common Gen3 moves
@@ -513,7 +638,7 @@ const MOVE_TYPE = {
 };
 
 function isStatusMove(moveToken){
-  const statusKeywords = ['GROWL','TAIL_WHIP','SYNTHESIS','GROWTH','SLEEP','POWDER','TOXIC','HYPER_BEAM','ROAR','REST','SAND_ATTACK','CONFUSION','AGILITY','SANDSTORM','DOUBLE_TEAM','TELEPORT','LOCK_ON','MORNING_SUN'];
+  const statusKeywords = ['GROWL','TAIL_WHIP','SYNTHESIS','GROWTH','SLEEP','POWDER','TOXIC','ROAR','REST','SAND_ATTACK','CONFUSION','AGILITY','SANDSTORM','DOUBLE_TEAM','TELEPORT','LOCK_ON','MORNING_SUN'];
   for (const k of statusKeywords){ if (moveToken.includes(k)) return true; }
   return false;
 }
@@ -536,10 +661,9 @@ async function selectBestSTABMove(speciesNameOrToken, level, trainer=null){
   const availableTMs = getAvailableTMsForTrainer(trainer);
 
   const candidates = [];
-  for (const mv of levelMoves){ if (!isStatusMove(mv)) candidates.push({ move: mv, source: 'level' }); }
-  for (const mv of tmMoves){ if (!isStatusMove(mv)){
-    if (availableTMs === null || availableTMs.has(mv) ) candidates.push({ move: mv, source: 'tm' });
-  }}
+  // include level moves and available TM moves; do not filter out status moves here so they appear in choices
+  for (const mv of levelMoves){ candidates.push({ move: mv, source: 'level' }); }
+  for (const mv of tmMoves){ if (availableTMs === null || availableTMs.has(mv) ) candidates.push({ move: mv, source: 'tm' }); }
 
   if (candidates.length === 0){
     // fallback: allow status moves or any available level/tm move
@@ -550,7 +674,7 @@ async function selectBestSTABMove(speciesNameOrToken, level, trainer=null){
   // compute scores asynchronously using parsed move data when available
   const scored = await Promise.all(candidates.map(async (c)=>{
     const moveToken = c.move;
-    let power = MOVE_POWER[moveToken] || 50;
+    let power = isStatusMove(moveToken) ? 0 : (MOVE_POWER[moveToken] || 50);
     let mtype = MOVE_TYPE[moveToken] || null;
     try{
       const resolved = await resolveMoveToken(moveToken);
@@ -689,14 +813,16 @@ function renderTypeBadges(container, types){
   }
   if (uniq.length === 0){ container.textContent = 'Type: —'; return; }
   const wrapper = document.createElement('div');
+  wrapper.className = 'type-wrapper';
   wrapper.style.display = 'flex';
   wrapper.style.flexWrap = 'wrap';
   wrapper.style.gap = '6px';
-  const label = document.createElement('div'); label.textContent = 'Type:'; label.style.fontWeight = '600'; label.style.marginRight = '6px'; label.style.alignSelf='center';
+  const label = document.createElement('div'); label.className = 'type-label'; label.textContent = 'Type:'; label.style.fontWeight = '600'; label.style.marginRight = '6px'; label.style.alignSelf='center';
   wrapper.appendChild(label);
   for (const key of uniq){
     const color = TYPE_COLORS[key] || '#ddd';
     const span = document.createElement('div');
+    span.className = 'type-pill';
     span.textContent = key[0].toUpperCase() + key.slice(1);
     span.style.background = color;
     span.style.color = '#fff';
@@ -705,6 +831,8 @@ function renderTypeBadges(container, types){
     span.style.fontSize = '12px';
     span.style.fontWeight = '600';
     span.style.display = 'inline-block';
+    span.style.flex = '0 0 auto';
+    span.style.whiteSpace = 'nowrap';
     wrapper.appendChild(span);
   }
   container.appendChild(wrapper);
@@ -1966,13 +2094,15 @@ function createTrainerCard(trainer, speciesList){
       const availableTMs = getAvailableTMsForTrainer(trainer);
       const candidates = new Set();
       for (const mv of levelMoves) candidates.add(mv);
-      for (const mv of tmMoves){ if (!isStatusMove(mv)){ if (availableTMs === null || availableTMs.has(mv)) candidates.add(mv); } }
+      // include TM/HM moves in UI lists regardless of status; availability still enforced
+      for (const mv of tmMoves){ if (availableTMs === null || availableTMs.has(mv)) candidates.add(mv); }
       const list = Array.from(candidates);
       // sort by power/stab heuristic
       const siForSort = await getSpeciesInfoByName(speciesName);
       const speciesTypes = (siForSort && siForSort.info && siForSort.info.types) ? siForSort.info.types : [];
       list.sort((a,b)=>{
-        const pa = MOVE_POWER[a] || 50; const pb = MOVE_POWER[b] || 50;
+        const pa = isStatusMove(a) ? 0 : (MOVE_POWER[a] || 50);
+        const pb = isStatusMove(b) ? 0 : (MOVE_POWER[b] || 50);
         const ta = MOVE_TYPE[a] || null; const tb = MOVE_TYPE[b] || null;
         const stabA = (ta && speciesTypes.includes(ta)) ? 50 : 0;
         const stabB = (tb && speciesTypes.includes(tb)) ? 50 : 0;
@@ -2067,6 +2197,11 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       }
     }
   }catch(e){ console.debug('Preload moves failed', e); }
+
+  // preload TM/HM availability file so auto-fill can filter candidate TMs per trainer
+  try{
+    await loadTMAvailabilityJSON();
+  }catch(e){ console.debug('TM availability load failed', e); }
 
   // add Planned Team UI at top
   const appContainer = document.getElementById('trainersContainer');
