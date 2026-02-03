@@ -1,0 +1,13 @@
+{
+"ABILITY_DAMP": "Prevents the use of self-destructing moves such as Explosion and Self-Destruct.",
+"ABILITY_VOLT_ABSORB": "Restores HP if hit by an Electric-type move; grants immunity to Electric-type moves.",
+"ABILITY_FLASH_FIRE": "Restores HP if hit by a Fire-type move; grants the Pokémon immunity to Fire-type moves",
+"ABILITY_WATER_ABSORB": "Restores HP if hit by a water-type move; grants immunity to Water-type moves.",
+"ABILITY_INTIMIDATE": "Lowers the opposing Pokémon's Attack stat by one stage upon entering battle. One stage = 50% decrease from its base value",
+"ABILITY_WONDER_GUARD": "Prevents all damage from moves that are not super effective against the Pokémon.",
+"ABILITY_LEVITATE": "Grants immunity to all Ground-type moves and the Arena Trap ability.",
+"ABILITY_HUGE_POWER": "Doubles the Pokémon's Attack stat.",
+"ABILITY_THICK_FAT": "Halves the damage taken from Fire- and Ice-type moves.",
+"ABILITY_TRUANT": "The Pokémon only attacks every other turn.",
+"ABILITY_GUTS": "Boosts the Attack stat by 50% when the Pokémon has a status condition."
+}

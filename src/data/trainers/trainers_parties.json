@@ -8,6 +8,7 @@
         "species": "SPECIES_GEODUDE",
         "heldItem": "ITEM_NONE",
         "nature": "Docile",
+        "abilities": ["ABILITY_ROCK_HEAD"],
         "moves": [
           "MOVE_TACKLE",
           "MOVE_DEFENSE_CURL",
@@ -29,6 +30,7 @@
         "species": "SPECIES_GEODUDE",
         "heldItem": "ITEM_NONE",
         "nature": "Quiet",
+        "abilities": ["ABILITY_ROCK_HEAD"],
         "moves": [
           "MOVE_TACKLE",
           "MOVE_DEFENSE_CURL",
@@ -50,6 +52,7 @@
         "species": "SPECIES_NOSEPASS",
         "heldItem": "ITEM_ORAN_BERRY",
         "nature": "Lonely",
+        "abilities": ["ABILITY_STURDY"],
         "moves": [
           "MOVE_BLOCK",
           "MOVE_HARDEN",
@@ -76,6 +79,7 @@
         "species": "SPECIES_MACHOP",
         "heldItem": "ITEM_NONE",
         "nature": "Hardy",
+        "abilities": ["ABILITY_GUTS"],
         "moves": [
           "MOVE_KARATE_CHOP",
           "MOVE_LOW_KICK",
@@ -97,6 +101,7 @@
         "species": "SPECIES_MEDITITE",
         "heldItem": "ITEM_NONE",
         "nature": "Calm",
+        "abilities": ["ABILITY_PURE_POWER"],
         "moves": [
           "MOVE_FOCUS_PUNCH",
           "MOVE_LIGHT_SCREEN",
@@ -118,6 +123,7 @@
         "species": "SPECIES_MAKUHITA",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Lax",
+        "abilities": ["ABILITY_THICK_FAT"],
         "moves": [
           "MOVE_ARM_THRUST",
           "MOVE_VITAL_THROW",
@@ -144,6 +150,7 @@
         "species": "SPECIES_VOLTORB",
         "heldItem": "ITEM_NONE",
         "nature": "Docile",
+        "abilities": ["ABILITY_SOUNDPROOF"],
         "moves": [
           "MOVE_ROLLOUT",
           "MOVE_SPARK",
@@ -165,6 +172,7 @@
         "species": "SPECIES_ELECTRIKE",
         "heldItem": "ITEM_NONE",
         "nature": "Serious",
+        "abilities": ["ABILITY_STATIC"],
         "moves": [
           "MOVE_SHOCK_WAVE",
           "MOVE_LEER",
@@ -186,6 +194,7 @@
         "species": "SPECIES_MAGNETON",
         "heldItem": "ITEM_NONE",
         "nature": "Impish",
+        "abilities": ["ABILITY_MAGNET_PULL"],
         "moves": [
           "MOVE_SUPERSONIC",
           "MOVE_SHOCK_WAVE",
@@ -207,6 +216,7 @@
         "species": "SPECIES_MANECTRIC",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Brave",
+        "abilities": ["ABILITY_STATIC"],
         "moves": [
           "MOVE_QUICK_ATTACK",
           "MOVE_THUNDER_WAVE",
@@ -233,6 +243,7 @@
         "species": "SPECIES_NUMEL",
         "heldItem": "ITEM_NONE",
         "nature": "Jolly",
+        "abilities": ["ABILITY_OBLIVIOUS"],
         "moves": [
           "MOVE_OVERHEAT",
           "MOVE_TAKE_DOWN",
@@ -254,6 +265,7 @@
         "species": "SPECIES_SLUGMA",
         "heldItem": "ITEM_NONE",
         "nature": "Calm",
+        "abilities": ["ABILITY_MAGMA_ARMOR"],
         "moves": [
           "MOVE_OVERHEAT",
           "MOVE_SMOG",
@@ -275,6 +287,7 @@
         "species": "SPECIES_CAMERUPT",
         "heldItem": "ITEM_NONE",
         "nature": "Adamant",
+        "abilities": ["ABILITY_MAGMA_ARMOR"],
         "moves": [
           "MOVE_OVERHEAT",
           "MOVE_TACKLE",
@@ -296,6 +309,7 @@
         "species": "SPECIES_TORKOAL",
         "heldItem": "ITEM_WHITE_HERB",
         "nature": "Modest",
+        "abilities": ["ABILITY_WHITE_SMOKE"],
         "moves": [
           "MOVE_OVERHEAT",
           "MOVE_SUNNY_DAY",
@@ -322,6 +336,7 @@
         "species": "SPECIES_SPINDA",
         "heldItem": "ITEM_NONE",
         "nature": "Docile",
+        "abilities": ["ABILITY_OWN_TEMPO"],
         "moves": [
           "MOVE_TEETER_DANCE",
           "MOVE_PSYBEAM",
@@ -343,6 +358,7 @@
         "species": "SPECIES_VIGOROTH",
         "heldItem": "ITEM_NONE",
         "nature": "Naive",
+        "abilities": ["ABILITY_VITAL_SPIRIT"],
         "moves": [
           "MOVE_SLASH",
           "MOVE_FACADE",
@@ -364,6 +380,7 @@
         "species": "SPECIES_LINOONE",
         "heldItem": "ITEM_NONE",
         "nature": "Lonely",
+        "abilities": ["ABILITY_PICKUP"],
         "moves": [
           "MOVE_SLASH",
           "MOVE_BELLY_DRUM",
@@ -385,6 +402,7 @@
         "species": "SPECIES_SLAKING",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Sassy",
+        "abilities": ["ABILITY_TRUANT"],
         "moves": [
           "MOVE_COUNTER",
           "MOVE_YAWN",
@@ -411,6 +429,7 @@
         "species": "SPECIES_SWABLU",
         "heldItem": "ITEM_NONE",
         "nature": "Hasty",
+        "abilities": ["ABILITY_NATURAL_CURE"],
         "moves": [
           "MOVE_PERISH_SONG",
           "MOVE_MIRROR_MOVE",
@@ -432,6 +451,7 @@
         "species": "SPECIES_TROPIUS",
         "heldItem": "ITEM_NONE",
         "nature": "Impish",
+        "abilities": ["ABILITY_CHLOROPHYLL"],
         "moves": [
           "MOVE_SUNNY_DAY",
           "MOVE_AERIAL_ACE",
@@ -453,6 +473,7 @@
         "species": "SPECIES_PELIPPER",
         "heldItem": "ITEM_NONE",
         "nature": "Calm",
+        "abilities": ["ABILITY_KEEN_EYE"],  
         "moves": [
           "MOVE_WATER_GUN",
           "MOVE_SUPERSONIC",
@@ -474,6 +495,7 @@
         "species": "SPECIES_SKARMORY",
         "heldItem": "ITEM_NONE",
         "nature": "Calm",
+        "abilities": ["ABILITY_KEEN_EYE"],
         "moves": [
           "MOVE_SAND_ATTACK",
           "MOVE_FURY_ATTACK",
@@ -495,6 +517,7 @@
         "species": "SPECIES_ALTARIA",
         "heldItem": "ITEM_ORAN_BERRY",
         "nature": "Docile",
+        "abilities": ["ABILITY_NATURAL_CURE"],
         "moves": [
           "MOVE_EARTHQUAKE",
           "MOVE_DRAGON_BREATH",
@@ -521,6 +544,7 @@
         "species": "SPECIES_CLAYDOL",
         "heldItem": "ITEM_NONE",
         "nature": "Lax",
+        "abilities": ["ABILITY_LEVITATE"],
         "moves": [
           "MOVE_EARTHQUAKE",
           "MOVE_ANCIENT_POWER",
@@ -542,6 +566,7 @@
         "species": "SPECIES_XATU",
         "heldItem": "ITEM_NONE",
         "nature": "Docile",
+        "abilities": ["ABILITY_SYNCHRONIZE"],
         "moves": [
           "MOVE_PSYCHIC",
           "MOVE_SUNNY_DAY",
@@ -563,6 +588,7 @@
         "species": "SPECIES_LUNATONE",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Impish",
+        "abilities": ["ABILITY_LEVITATE"],
         "moves": [
           "MOVE_LIGHT_SCREEN",
           "MOVE_PSYCHIC",
@@ -584,6 +610,7 @@
         "species": "SPECIES_SOLROCK",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Modest",
+        "abilities": ["ABILITY_LEVITATE"],
         "moves": [
           "MOVE_SUNNY_DAY",
           "MOVE_SOLAR_BEAM",
@@ -610,6 +637,7 @@
         "species": "SPECIES_LUVDISC",
         "heldItem": "ITEM_NONE",
         "nature": "Adamant",
+        "abilities": ["ABILITY_SWIFT_SWIM"],
         "moves": [
           "MOVE_WATER_PULSE",
           "MOVE_ATTRACT",
@@ -631,6 +659,7 @@
         "species": "SPECIES_WHISCASH",
         "heldItem": "ITEM_NONE",
         "nature": "Hasty",
+        "abilities": ["ABILITY_OBLIVIOUS"],
         "moves": [
           "MOVE_RAIN_DANCE",
           "MOVE_WATER_PULSE",
@@ -652,6 +681,7 @@
         "species": "SPECIES_SEALEO",
         "heldItem": "ITEM_NONE",
         "nature": "Naive",
+        "abilities": ["ABILITY_THICK_FAT"],
         "moves": [
           "MOVE_ENCORE",
           "MOVE_BODY_SLAM",
@@ -673,6 +703,7 @@
         "species": "SPECIES_CRAWDAUNT",
         "heldItem": "ITEM_NONE",
         "nature": "Adamant",
+        "abilities": ["ABILITY_HYPER_CUTTER"], 
         "moves": [
           "MOVE_WATER_PULSE",
           "MOVE_CRABHAMMER",
@@ -694,6 +725,7 @@
         "species": "SPECIES_KINGDRA",
         "heldItem": "ITEM_CHESTO_BERRY",
         "nature": "Naive",
+        "abilities": ["ABILITY_SWIFT_SWIM"],
         "moves": [
           "MOVE_WATER_PULSE",
           "MOVE_DOUBLE_TEAM",
@@ -720,6 +752,7 @@
         "species": "SPECIES_MIGHTYENA",
         "heldItem": "ITEM_NONE",
         "nature": "Rash",
+        "abilities": ["ABILITY_INTIMIDATE"],
         "moves": [
           "MOVE_ROAR",
           "MOVE_DOUBLE_EDGE",
@@ -741,6 +774,7 @@
         "species": "SPECIES_SHIFTRY",
         "heldItem": "ITEM_NONE",
         "nature": "Jolly",
+        "abilities": ["ABILITY_CHLOROPHYLL"],
         "moves": [
           "MOVE_TORMENT",
           "MOVE_DOUBLE_TEAM",
@@ -762,6 +796,7 @@
         "species": "SPECIES_CACTURNE",
         "heldItem": "ITEM_NONE",
         "nature": "Adamant",
+        "abilities": ["ABILITY_SAND_VEIL"],
         "moves": [
           "MOVE_LEECH_SEED",
           "MOVE_FAINT_ATTACK",
@@ -783,6 +818,7 @@
         "species": "SPECIES_CRAWDAUNT",
         "heldItem": "ITEM_NONE",
         "nature": "Naughty",
+        "abilities": ["ABILITY_HYPER_CUTTER"],
         "moves": [
           "MOVE_SURF",
           "MOVE_SWORDS_DANCE",
@@ -804,6 +840,7 @@
         "species": "SPECIES_ABSOL",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Bold",
+        "abilities": ["ABILITY_PRESSURE"],
         "moves": [
           "MOVE_AERIAL_ACE",
           "MOVE_ROCK_SLIDE",
@@ -830,6 +867,7 @@
         "species": "SPECIES_DUSCLOPS",
         "heldItem": "ITEM_NONE",
         "nature": "Naughty",
+        "abilities": ["ABILITY_PRESSURE"],
         "moves": [
           "MOVE_SHADOW_PUNCH",
           "MOVE_CONFUSE_RAY",
@@ -851,6 +889,7 @@
         "species": "SPECIES_BANETTE",
         "heldItem": "ITEM_NONE",
         "nature": "Calm",
+        "abilities": ["ABILITY_INSOMNIA"],
         "moves": [
           "MOVE_SHADOW_BALL",
           "MOVE_GRUDGE",
@@ -872,6 +911,7 @@
         "species": "SPECIES_SABLEYE",
         "heldItem": "ITEM_NONE",
         "nature": "Careful",
+        "abilities": ["ABILITY_KEEN_EYE"],
         "moves": [
           "MOVE_SHADOW_BALL",
           "MOVE_DOUBLE_TEAM",
@@ -893,6 +933,7 @@
         "species": "SPECIES_BANETTE",
         "heldItem": "ITEM_NONE",
         "nature": "Naive",
+        "abilities": ["ABILITY_INSOMNIA"],
         "moves": [
           "MOVE_SHADOW_BALL",
           "MOVE_PSYCHIC",
@@ -914,6 +955,7 @@
         "species": "SPECIES_DUSCLOPS",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Careful",
+        "abilities": ["ABILITY_PRESSURE"],
         "moves": [
           "MOVE_SHADOW_BALL",
           "MOVE_ICE_BEAM",
@@ -940,6 +982,7 @@
         "species": "SPECIES_SEALEO",
         "heldItem": "ITEM_NONE",
         "nature": "Brave",
+        "abilities": ["ABILITY_THICK_FAT"],
         "moves": [
           "MOVE_ENCORE",
           "MOVE_BODY_SLAM",
@@ -961,6 +1004,7 @@
         "species": "SPECIES_GLALIE",
         "heldItem": "ITEM_NONE",
         "nature": "Bashful",
+        "abilities": ["ABILITY_INNER_FOCUS"],
         "moves": [
           "MOVE_LIGHT_SCREEN",
           "MOVE_CRUNCH",
@@ -982,6 +1026,7 @@
         "species": "SPECIES_SEALEO",
         "heldItem": "ITEM_NONE",
         "nature": "Hardy",
+        "abilities": ["ABILITY_THICK_FAT"],
         "moves": [
           "MOVE_ATTRACT",
           "MOVE_DOUBLE_EDGE",
@@ -1003,6 +1048,7 @@
         "species": "SPECIES_GLALIE",
         "heldItem": "ITEM_NONE",
         "nature": "Mild",
+        "abilities": ["ABILITY_INNER_FOCUS"],
         "moves": [
           "MOVE_SHADOW_BALL",
           "MOVE_EXPLOSION",
@@ -1024,6 +1070,7 @@
         "species": "SPECIES_WALREIN",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Naive",
+        "abilities": ["ABILITY_THICK_FAT"],
         "moves": [
           "MOVE_SURF",
           "MOVE_BODY_SLAM",
@@ -1050,6 +1097,7 @@
         "species": "SPECIES_SHELGON",
         "heldItem": "ITEM_NONE",
         "nature": "Quiet",
+        "abilities": ["ABILITY_ROCK_HEAD"],
         "moves": [
           "MOVE_ROCK_TOMB",
           "MOVE_DRAGON_CLAW",
@@ -1071,6 +1119,7 @@
         "species": "SPECIES_ALTARIA",
         "heldItem": "ITEM_NONE",
         "nature": "Modest",
+        "abilities": ["ABILITY_NATURAL_CURE"],
         "moves": [
           "MOVE_DOUBLE_EDGE",
           "MOVE_DRAGON_BREATH",
@@ -1092,6 +1141,7 @@
         "species": "SPECIES_KINGDRA",
         "heldItem": "ITEM_NONE",
         "nature": "Hardy",
+        "abilities": ["ABILITY_SWIFT_SWIM"],
         "moves": [
           "MOVE_SMOKESCREEN",
           "MOVE_DRAGON_DANCE",
@@ -1113,6 +1163,7 @@
         "species": "SPECIES_FLYGON",
         "heldItem": "ITEM_NONE",
         "nature": "Lax",
+        "abilities": ["ABILITY_LEVITATE"],
         "moves": [
           "MOVE_FLAMETHROWER",
           "MOVE_CRUNCH",
@@ -1134,6 +1185,7 @@
         "species": "SPECIES_SALAMENCE",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Bold",
+        "abilities": ["ABILITY_INTIMIDATE"],
         "moves": [
           "MOVE_FLAMETHROWER",
           "MOVE_DRAGON_CLAW",
@@ -1160,6 +1212,7 @@
         "species": "SPECIES_WAILORD",
         "heldItem": "ITEM_NONE",
         "nature": "Rash",
+        "abilities": ["ABILITY_WATER_VEIL"],
         "moves": [
           "MOVE_RAIN_DANCE",
           "MOVE_WATER_SPOUT",
@@ -1181,6 +1234,7 @@
         "species": "SPECIES_TENTACRUEL",
         "heldItem": "ITEM_NONE",
         "nature": "Sassy",
+        "abilities": ["ABILITY_CLEAR_BODY"],
         "moves": [
           "MOVE_TOXIC",
           "MOVE_HYDRO_PUMP",
@@ -1202,6 +1256,7 @@
         "species": "SPECIES_LUDICOLO",
         "heldItem": "ITEM_NONE",
         "nature": "Hardy",
+        "abilities": ["ABILITY_SWIFT_SWIM"],
         "moves": [
           "MOVE_GIGA_DRAIN",
           "MOVE_SURF",
@@ -1223,6 +1278,7 @@
         "species": "SPECIES_WHISCASH",
         "heldItem": "ITEM_NONE",
         "nature": "Sassy",
+        "abilities": ["ABILITY_OBLIVIOUS"],
         "moves": [
           "MOVE_EARTHQUAKE",
           "MOVE_SURF",
@@ -1244,6 +1300,7 @@
         "species": "SPECIES_GYARADOS",
         "heldItem": "ITEM_NONE",
         "nature": "Rash",
+        "abilities": ["ABILITY_INTIMIDATE"],
         "moves": [
           "MOVE_DRAGON_DANCE",
           "MOVE_EARTHQUAKE",
@@ -1265,6 +1322,7 @@
         "species": "SPECIES_MILOTIC",
         "heldItem": "ITEM_SITRUS_BERRY",
         "nature": "Gentle",
+        "abilities": ["ABILITY_MARVEL_SCALE"],
         "moves": [
           "MOVE_RECOVER",
           "MOVE_SURF",

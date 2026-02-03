@@ -28,10 +28,10 @@ function normalizeNameForLookup(s){
 // In-memory planned-team storage (do not persist by default)
 window.__emerald_planned_team = window.__emerald_planned_team || [];
 window.__emerald_planned_team_natures = window.__emerald_planned_team_natures || [];
-window.__emerald_planned_team_genders = window.__emerald_planned_team_genders || [];
+window.__emerald_planned_team_abilities = window.__emerald_planned_team_abilities || [];
 function getPlannedTeam(){ return window.__emerald_planned_team || []; }
 function getPlannedNatures(){ return window.__emerald_planned_team_natures || []; }
-function getPlannedGenders(){ return window.__emerald_planned_team_genders || []; }
+function getPlannedAbilities(){ return window.__emerald_planned_team_abilities || []; }
 
 function getSpriteNumberForSpeciesName(speciesName){
   const key = normalizeNameForLookup(speciesName);
@@ -84,6 +84,15 @@ async function loadSpeciesInfoH(){
         info.types = types.map(t=>t.replace(/_/g,'').toLowerCase());
       } else {
         info.types = null;
+      }
+      // abilities: .abilities = {ABILITY_OVERGROW, ABILITY_NONE},
+      const abilitiesMatch = body.match(/\.abilities\s*=\s*\{([^\}]+)\}/i);
+      if (abilitiesMatch){
+        const inside = abilitiesMatch[1];
+        const abilities = Array.from(inside.matchAll(/(ABILITY_[A-Z0-9_]+)/g)).map(x=>x[1]);
+        info.abilities = abilities;
+      } else {
+        info.abilities = null;
       }
       _speciesInfoMap[token] = info;
     }
@@ -203,6 +212,11 @@ function prettyMove(code){
   return code.replace(/^MOVE_/, '').toLowerCase().replace(/_/g,' ').replace(/(^|\s)([a-z])/g,(m,p,c)=>c.toUpperCase());
 }
 
+function prettyAbility(code){
+  if (!code) return '';
+  return code.replace(/^ABILITY_/, '').toLowerCase().replace(/_/g,' ').replace(/(^|\s)([a-z])/g,(m,p,c)=>c.toUpperCase());
+}
+
 function createInput(labelText, attrs = {}){
   const wrapper = document.createElement('div');
   wrapper.style.marginBottom = '6px';
@@ -255,7 +269,7 @@ function renderStatBars(container, stats){
   const order = [ ['HP','hp'], ['Attack','atk'], ['Defense','def'], ['Sp. Atk','spa'], ['Sp. Def','spd'], ['Speed','spe'] ];
   const maxStat = 200; // scaling reference
   let total = 0;
-  for (const [label,key] of order){
+    for (const [label, key] of order){
     const val = stats[key] || 0;
     total += val;
     const row = document.createElement('div');
@@ -725,17 +739,33 @@ async function selectBestSTABMove(speciesNameOrToken, level, trainer=null){
   // compute scores asynchronously using parsed move data when available
   const scored = await Promise.all(candidates.map(async (c)=>{
     const moveToken = c.move;
-    let power = isStatusMove(moveToken) ? 0 : (MOVE_POWER[moveToken] || 50);
+    // start with conservative defaults, but prefer authoritative data from movesMap when available
+    let power = (MOVE_POWER[moveToken] != null) ? MOVE_POWER[moveToken] : 50;
     let mtype = MOVE_TYPE[moveToken] || null;
     try{
       const resolved = await resolveMoveToken(moveToken);
       const mm = movesMap && (movesMap[resolved] || movesMap[moveToken]) ? (movesMap[resolved] || movesMap[moveToken]) : null;
-      if (mm){ if (mm.power != null) power = mm.power; if (mm.type) mtype = mm.type; }
-    }catch(e){ /* ignore */ }
+      if (mm){
+        // If parsed move entry exists but has no numeric power, treat as a status move (power = 0)
+        if (mm.power == null || mm.power === 0) power = 0;
+        else power = mm.power;
+        if (mm.type) mtype = mm.type;
+      } else {
+        // fallback: treat known status-like tokens via simple heuristic
+        if (isStatusMove(moveToken)) power = 0;
+      }
+    }catch(e){
+      if (isStatusMove(moveToken)) power = 0;
+    }
     const stab = (mtype && types.includes(mtype)) ? 50 : 0;
-    return { move: moveToken, score: power + stab, source: c.source };
+    return { move: moveToken, score: power + stab, source: c.source, power: power, mtype: mtype };
   }));
   scored.sort((a,b)=>b.score - a.score);
+  // Prefer moves that actually deal damage (power > 0). Only pick a 0-power move
+  // if there are no damaging moves available.
+  const damaging = scored.filter(s => (s.power || 0) > 0);
+  if (damaging.length > 0){ damaging.sort((a,b)=>b.score - a.score); return damaging[0].move; }
+  // otherwise fall back to best available (even if 0 power)
   return scored[0].move;
 }
 
@@ -984,6 +1014,11 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
   const A = isSpecial ? (attStats && attStats.spa ? attStats.spa : computeStatFromBase(atkBase.spa, options.attIV||31, options.attEV||0, attackerLevel, false)) : (attStats && attStats.atk ? attStats.atk : computeStatFromBase(atkBase.atk, options.attIV||31, options.attEV||0, attackerLevel, false));
   const D = isSpecial ? (defStats && defStats.spd ? defStats.spd : computeStatFromBase(defBase.spd, options.defIV||31, options.defEV||0, defenderLevel, false)) : (defStats && defStats.def ? defStats.def : computeStatFromBase(defBase.def, options.defIV||31, options.defEV||0, defenderLevel, false));
 
+  // Attacker / defender abilities passed in options (tokens like 'ABILITY_HUGE_POWER')
+  const attAbility = options.attAbility || null;
+  const defAbility = options.defAbility || null;
+  const appliedAbilityNotes = [];
+
   // Apply Gen3 Hoenn badge stat boosts to attacker if requested.
   // If options.applyBadgeBonuses is true, check active badges and apply +10% to the relevant attacking stat (Atk or SpA).
   let badgeMultiplier = 1.0;
@@ -1005,8 +1040,21 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
     }
   }catch(e){ /* ignore */ }
 
+  // apply attacker ability stat modifiers before badges
+  let A_afterAbility = A;
+  try{
+    if (attAbility === 'ABILITY_HUGE_POWER'){
+      A_afterAbility = Math.floor(A_afterAbility * 2);
+      appliedAbilityNotes.push({ side: 'att', ability: attAbility, effect: 'Huge Power doubles Attack' });
+    }
+    if (attAbility === 'ABILITY_GUTS' && options.attStatus){
+      A_afterAbility = Math.floor(A_afterAbility * 1.5);
+      appliedAbilityNotes.push({ side: 'att', ability: attAbility, effect: 'Guts increases Attack by 50% due to status' });
+    }
+  }catch(e){ }
+
   // If we have a computed A from above, multiply it by badgeMultiplier
-  const A_eff = Math.max(1, Math.floor(A * badgeMultiplier));
+  const A_eff = Math.max(1, Math.floor(A_afterAbility * badgeMultiplier));
   // replace A used in formula (apply badge-adjusted A)
   const base = Math.floor(((((2*attackerLevel)/5 + 2) * power * A_eff / D) / 50) + 2);
   let modifier = 1.0;
@@ -1016,7 +1064,47 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
   const hasStab = (mtype && atkTypes.includes(mtype));
   if (hasStab) modifier *= 1.5;
   const effMult = typeEffectiveness(mtype, defTypes);
+  // keep base effectiveness separate for display; ability-driven modifiers (like Thick Fat)
+  const effectivenessBase = effMult;
+  const effectivenessNotes = [];
   modifier *= effMult;
+
+  // Defensive ability checks that can short-circuit damage or modify it
+  try{
+    // Levitate: immunity to Ground
+    if (defAbility === 'ABILITY_LEVITATE' && mtype === 'ground'){
+      appliedAbilityNotes.push({ side: 'def', ability: defAbility, effect: 'Levitate grants immunity to Ground moves' });
+      return { rolls: [], min:0, max:0, expected:0, ohkoGuaranteed:false, ohkoPossible:false, move: canonicalMove, power, type: mtype, category: (m && m.category) ? m.category : (isSpecial ? 'special' : 'physical'), defHP };
+    }
+    // Volt Absorb / Water Absorb / Flash Fire: immunity to matching type
+    if (defAbility === 'ABILITY_VOLT_ABSORB' && mtype === 'electric'){
+      appliedAbilityNotes.push({ side: 'def', ability: defAbility, effect: 'Volt Absorb grants immunity to Electric moves' });
+      return { rolls: [], min:0, max:0, expected:0, ohkoGuaranteed:false, ohkoPossible:false, move: canonicalMove, power, type: mtype, category: (m && m.category) ? m.category : (isSpecial ? 'special' : 'physical'), defHP };
+    }
+    if (defAbility === 'ABILITY_WATER_ABSORB' && mtype === 'water'){
+      appliedAbilityNotes.push({ side: 'def', ability: defAbility, effect: 'Water Absorb grants immunity to Water moves' });
+      return { rolls: [], min:0, max:0, expected:0, ohkoGuaranteed:false, ohkoPossible:false, move: canonicalMove, power, type: mtype, category: (m && m.category) ? m.category : (isSpecial ? 'special' : 'physical'), defHP };
+    }
+    if (defAbility === 'ABILITY_FLASH_FIRE' && mtype === 'fire'){
+      appliedAbilityNotes.push({ side: 'def', ability: defAbility, effect: 'Flash Fire grants immunity to Fire moves' });
+      return { rolls: [], min:0, max:0, expected:0, ohkoGuaranteed:false, ohkoPossible:false, move: canonicalMove, power, type: mtype, category: (m && m.category) ? m.category : (isSpecial ? 'special' : 'physical'), defHP };
+    }
+    // Wonder Guard: only allow damage if super-effective (effectiveness > 1)
+    if (defAbility === 'ABILITY_WONDER_GUARD'){
+      if (typeof effMult !== 'undefined' && effMult <= 1){
+        appliedAbilityNotes.push({ side: 'def', ability: defAbility, effect: 'Wonder Guard blocks non-super-effective damage' });
+        return { rolls: [], min:0, max:0, expected:0, ohkoGuaranteed:false, ohkoPossible:false, move: canonicalMove, power, type: mtype, category: (m && m.category) ? m.category : (isSpecial ? 'special' : 'physical'), defHP };
+      } else {
+        appliedAbilityNotes.push({ side: 'def', ability: defAbility, effect: 'Wonder Guard does not block super-effective damage' });
+      }
+    }
+    // Thick Fat: halves Fire/Ice damage after effectiveness. Represent as multiplier on effectiveness for display.
+    if (defAbility === 'ABILITY_THICK_FAT' && (mtype === 'fire' || mtype === 'ice')){
+      modifier *= 0.5;
+      appliedAbilityNotes.push({ side: 'def', ability: defAbility, effect: 'Thick Fat halves Fire/Ice damage' });
+      effectivenessNotes.push('*0.5 from Thick Fat');
+    }
+  }catch(e){ }
 
   const trueBase = Math.max(1, Math.floor(base * modifier));
   const mults = _gen3RandomMultipliers();
@@ -1024,6 +1112,34 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
   const min = Math.min(...rolls);
   const max = Math.max(...rolls);
   const expected = rolls.reduce((a,b)=>a+b,0)/rolls.length;
+  // assemble result and attach any applied ability notes
+  const result = {
+    rolls,
+    min,
+    max,
+    expected,
+    ohkoGuaranteed: min >= defHP,
+    ohkoPossible: max >= defHP,
+    move: canonicalMove,
+    power,
+    type: mtype,
+    category: (m && m.category) ? m.category : (isSpecial ? 'special' : 'physical'),
+    defHP,
+    attacker: { token: attackerToken, level: attackerLevel, atkStat: A, spaStat: (attStats && attStats.spa) || null, types: atkTypes },
+    defender: { token: defenderToken, level: defenderLevel, defStat: D, spdStat: (defStats && defStats.spd) || null, hp: defHP, types: defTypes },
+    rawBase: base,
+    modifier,
+    stab: hasStab ? 1.5 : 1.0,
+    effectiveness: effMult,
+    effectivenessBase: effectivenessBase,
+    effectivenessDisplay: effectivenessNotes.length ? (String(effectivenessBase) + ' ' + effectivenessNotes.join(' ')) : String(effectivenessBase),
+    trueBase,
+    mults,
+    badgeMultiplier: badgeMultiplier || 1.0,
+    badgesApplied: badgesApplied || [],
+    appliedAbilities: appliedAbilityNotes.length ? appliedAbilityNotes : undefined,
+  };
+  return result;
   return {
     rolls,
     min,
@@ -1107,14 +1223,23 @@ async function computeEnemyBestHit(enemyMon, ourMon, context = {}){
   if (Array.isArray(enemyMon.moves) && enemyMon.moves.length){
     for (const mv of enemyMon.moves){
       // ignore pure support/status moves when choosing the enemy's best damaging hit
-      if (isStatusMove(mv)) continue;
+      // Also treat moves with 0 power (parsed or known) as status and skip them.
+      try{
+        if (isStatusMove(mv)) continue;
+        const resolved = await resolveMoveToken(mv);
+        const mm = movesMap && (movesMap[resolved] || movesMap[mv]) ? (movesMap[resolved] || movesMap[mv]) : null;
+        let mvPower = null;
+        if (mm){ mvPower = (mm.power == null) ? 0 : mm.power; }
+        else { mvPower = (MOVE_POWER[mv] != null) ? MOVE_POWER[mv] : null; }
+        if (mvPower === 0) continue;
+      }catch(e){ /* ignore resolution errors, fall through */ }
       const dmg = await calcDamageRange(
         enemyMon.species,
         enemyMon.lvl || enemyMon.level || 50,
         ourMon.species,
         ourMon.level || ourMon.level || 50,
         mv,
-        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null })
+        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null })
       );
       candidates.push({ move: mv, expected: dmg.expected, max: dmg.max, dr: dmg });
     }
@@ -1129,7 +1254,7 @@ async function computeEnemyBestHit(enemyMon, ourMon, context = {}){
         ourMon.species,
         ourMon.level || ourMon.level || 50,
         mv,
-        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null })
+        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null })
       );
       candidates.push({ move: mv, expected: dmg.expected, max: dmg.max, dr: dmg });
     }
@@ -1170,7 +1295,7 @@ async function computePairScore(userMon, enemyMon, context = {}){
   for (const mv of moves){
     if (!mv) continue;
     if (isStatusMove(mv)) continue;
-    const dr = await calcDamageRange(userMon.species, uLevel, enemyMon.species, eLevel, mv, { attStats: uStats, defStats: eStats, applyBadgeBonuses: true });
+    const dr = await calcDamageRange(userMon.species, uLevel, enemyMon.species, eLevel, mv, { attStats: uStats, defStats: eStats, applyBadgeBonuses: true, attAbility: userMon.ability || null, defAbility: enemyMon.ability || null });
     if (dr.expected > bestUser.expected){ bestUser = { move: mv, expected: dr.expected, dr }; }
   }
 
@@ -1247,7 +1372,7 @@ async function evaluateMatchup(A, B, moveset, context = {}){
       B.species,
       B.level || B.lvl || 50,
       mv,
-      Object.assign({}, context, { attStats: A.statsFinal || A.stats || null, defStats: B.statsFinal || B.stats || null, applyBadgeBonuses: !!context.applyBadgeBonuses })
+      Object.assign({}, context, { attStats: A.statsFinal || A.stats || null, defStats: B.statsFinal || B.stats || null, applyBadgeBonuses: !!context.applyBadgeBonuses, attAbility: A.ability || null, defAbility: B.ability || null })
     );
     const koClass = classifyKO(dmg, dmg.defHP || (B.statsFinal && B.statsFinal.hp) || 1);
     const outspeed = compareSpeed(A.statsFinal.spe, B.statsFinal.spe, context.speedTiePolicy);
@@ -1571,7 +1696,7 @@ async function buildTrainerPartyStates(trainer){
     const lvl = enemy.lvl || enemy.level || 50;
     // If the trainer JSON already includes precomputed stats, use them directly
     if (enemy.stats){
-      partyStates.push({ species: enemy.species, level: lvl, statsFinal: enemy.stats, moves: enemy.moves || [] });
+      partyStates.push({ species: enemy.species, level: lvl, statsFinal: enemy.stats, moves: enemy.moves || [], ability: (Array.isArray(enemy.abilities) && enemy.abilities.length) ? enemy.abilities[0] : (enemy.ability || null) });
       continue;
     }
     const si2 = await getSpeciesInfoByName(prettySpecies(enemy.species).toLowerCase()) || await getSpeciesInfoByName(enemy.species);
@@ -1588,7 +1713,7 @@ async function buildTrainerPartyStates(trainer){
       spd: computeStatFromBase(b.spd, 31, 0, lvl, false),
       spe: computeStatFromBase(b.spe, 31, 0, lvl, false)
     };
-    partyStates.push({ species: enemy.species, level: lvl, statsFinal: st, moves: enemy.moves || [] });
+    partyStates.push({ species: enemy.species, level: lvl, statsFinal: st, moves: enemy.moves || [], ability: (Array.isArray(enemy.abilities) && enemy.abilities.length) ? enemy.abilities[0] : (enemy.ability || null) });
   }
   return partyStates;
 }
@@ -1607,14 +1732,14 @@ async function computePerEnemyBest(teamMons, partyStates, context = {}){
     // collect damage details for display
     let damageInfo = null;
     if (best && best.chosenEval && best.chosenEval.bestMoveId){
-      const dr = await calcDamageRange(
-          best.chosenMon.species,
-          best.chosenMon.level,
-          enemy.species,
-          enemy.level,
-          best.chosenEval.bestMoveId,
-          { attStats: best.chosenMon.statsFinal || best.chosenMon.stats || null, defStats: enemy.statsFinal || enemy.stats || null, applyBadgeBonuses: true }
-        );
+      const dmg = await calcDamageRange(
+        enemyMon.species,
+        enemyMon.lvl || enemyMon.level || 50,
+        ourMon.species,
+        ourMon.level || ourMon.level || 50,
+        mv,
+        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null })
+      );
       damageInfo = dr;
     }
     perEnemy.push({ enemy, best, damageInfo });
@@ -1744,6 +1869,21 @@ function createTrainerCard(trainer, speciesList){
       meta.appendChild(sym);
     }
     info.appendChild(meta);
+
+    // abilities: render on its own line under the IV/nature meta
+    const abilitiesDiv = document.createElement('div');
+    abilitiesDiv.className = 'muted trainer-abilities';
+    abilitiesDiv.style.fontSize = '12px';
+    abilitiesDiv.style.marginTop = '4px';
+    if (Array.isArray(p.abilities) && p.abilities.length > 0){
+      abilitiesDiv.textContent = p.abilities.map(a=>prettyAbility(a)).join(', ');
+    } else if (p.ability){
+      // fallback single ability key
+      abilitiesDiv.textContent = prettyAbility(p.ability);
+    } else {
+      abilitiesDiv.textContent = '';
+    }
+    info.appendChild(abilitiesDiv);
 
     // Trainer stats are omitted on the trainer cards to keep layout stable.
 
@@ -1927,6 +2067,12 @@ function createTrainerCard(trainer, speciesList){
     preview.style.marginBottom = '6px';
     preview.alt = 'sprite';
     slot.appendChild(preview);
+    // ability display for the user's slot (will show chosen or default ability)
+    const userAbilityDiv = document.createElement('div');
+    userAbilityDiv.className = 'muted user-slot-ability';
+    userAbilityDiv.style.fontSize = '12px';
+    userAbilityDiv.style.marginBottom = '6px';
+    slot.appendChild(userAbilityDiv);
     // create and append level input directly under the sprite for quick access
     const { wrapper: lvWrap, input: lvInput } = createInput('Level (1-100)', { type: 'number', min:1, max:100, value:50 });
     slot.appendChild(lvWrap);
@@ -1971,6 +2117,14 @@ function createTrainerCard(trainer, speciesList){
       } else {
         preview.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=';
       }
+      // asynchronously resolve species default ability and show it unless an explicit ability is set on the control
+      (async ()=>{
+        try{
+          const si = await getSpeciesInfoByName(name);
+          const abs = (si && si.info && Array.isArray(si.info.abilities)) ? si.info.abilities.filter(a=>a && a !== 'ABILITY_NONE') : [];
+          if (abs.length) userAbilityDiv.textContent = prettyAbility(abs[0]); else userAbilityDiv.textContent = '';
+        }catch(e){ /* ignore */ }
+      })();
     }
 
     // (Nature selector omitted from trainer slot - use Planned Team nature)
@@ -2128,7 +2282,7 @@ function createTrainerCard(trainer, speciesList){
     computeAndRenderSlotStats().catch(()=>{});
 
     // collect controls for programmatic filling (include slot DOM for visibility control)
-    slotControls.push({ spInput, preview, setSlotPreview, lvInput, ivInput, evInputs, moveSelects, populateMoveSelectsForSlot, computeAndRenderSlotStats, slotEl: slot });
+    slotControls.push({ spInput, preview, setSlotPreview, lvInput, ivInput, evInputs, moveSelects, populateMoveSelectsForSlot, computeAndRenderSlotStats, slotEl: slot, abilityDiv: userAbilityDiv, ability: null });
 
     builder.appendChild(slot);
   }
@@ -2258,6 +2412,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     try{ planned = getPlannedTeam(); }catch(e){ planned = []; }
     let savedNatures = [];
     try{ savedNatures = getPlannedNatures(); }catch(e){ savedNatures = []; }
+    let savedAbilities = [];
+    try{ savedAbilities = getPlannedAbilities(); }catch(e){ savedAbilities = []; }
     for (const t of trainersList){
       const slotControls = trainerSlotControls.get(t.name);
       if (!slotControls) continue;
@@ -2286,6 +2442,18 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         const tmMoves = (tmSets[chosenToken] || []);
         const si = await getSpeciesInfoByName(displayName);
         const types = (si && si.info && si.info.types) ? si.info.types : [];
+        // assign ability for this user slot from planned-team abilities if available,
+        // otherwise fall back to species default ability (first non-ABILITY_NONE)
+        try{
+          let desired = savedAbilities[i] || null;
+          if (!desired){
+            const si2 = si || await getSpeciesInfoByName(displayName);
+            const sabs = (si2 && si2.info && Array.isArray(si2.info.abilities)) ? si2.info.abilities.filter(a=>a && a !== 'ABILITY_NONE') : [];
+            if (sabs.length) desired = sabs[0];
+          }
+          ctrl.ability = desired || null;
+          if (ctrl.abilityDiv) ctrl.abilityDiv.textContent = ctrl.ability ? prettyAbility(ctrl.ability) : '';
+        }catch(e){ ctrl.ability = null; }
         const availableTMs = getAvailableTMsForTrainer(t);
         const candidates = {};
         for (const mv of levelMoves) {
@@ -2385,17 +2553,18 @@ document.addEventListener('DOMContentLoaded', async ()=>{
               const lvl = parseInt(ctrl.lvInput.value,10) || 50;
               let stats = ctrl.spInput.computedStats || null;
               const moveset = (ctrl.moveSelects || []).map(s=>s.value).filter(Boolean);
+              const ability = ctrl.ability || null;
               try{
                 const seg = trainerNameToSegment(t) || approximateSegmentForLevel(t.maxLevel || t.level || 50);
                 if (seg && seg > 3 && stats && typeof stats.spe === 'number'){
                   stats = Object.assign({}, stats);
                   stats.speBeforeDynamo = stats.spe;
                   stats.spe = Math.floor(stats.spe * 1.1);
-                  teamMons.push({ species, level: lvl, statsFinal: stats, moveset, dynamoApplied: true });
+                  teamMons.push({ species, level: lvl, statsFinal: stats, moveset, dynamoApplied: true, ability });
                   continue;
                 }
               }catch(e){}
-              teamMons.push({ species, level: lvl, statsFinal: stats, moveset });
+              teamMons.push({ species, level: lvl, statsFinal: stats, moveset, ability });
             }catch(e){ /* ignore slot errors */ }
           }
           if (teamMons.length === 0){
@@ -2457,12 +2626,101 @@ document.addEventListener('DOMContentLoaded', async ()=>{
                     try{ const tm = teamMons[ri]; if (tm){ const boosted = (tm.statsFinal && typeof tm.statsFinal.spe === 'number') ? tm.statsFinal.spe : null; const before = (tm.statsFinal && typeof tm.statsFinal.speBeforeDynamo === 'number') ? tm.statsFinal.speBeforeDynamo : null; if (before != null && boosted != null && tm.dynamoApplied){ pushMetric('Attacker speed', `${before} -> ${boosted} (Dynamo ×1.10 applied)`); } else if (boosted != null) pushMetric('Attacker speed', boosted); } }catch(e){}
                     if (v.hitsToKOUser != null) pushMetric('Hits to KO (user -> enemy)', v.hitsToKOUser);
                     if (v.hitsToKOEnemy != null) pushMetric('Hits to KO (enemy -> user)', v.hitsToKOEnemy);
-                    if (v.userExpected != null) pushMetric('User expected damage per best move', v.userExpected.toFixed(2));
-                    if (v.enemyExpected != null) pushMetric('Enemy expected damage per best move', v.enemyExpected.toFixed(2));
-                    if (v.userBestMove) pushMetric('User best move', `${v.userBestMove.id} (expected ${v.userBestMove.expected || 0}${v.userBestMove.max ? `, max ${v.userBestMove.max}` : ''})`);
+                    if (v.userExpected != null) {
+                      let txt = v.userExpected.toFixed(2);
+                      try{
+                        const dr = v.userBestMove && v.userBestMove.dr ? v.userBestMove.dr : null;
+                        if (dr && dr.defender && dr.defender.hp){ const pct = (dr.expected / dr.defender.hp) * 100; txt += ` (${pct.toFixed(1)}%)`; }
+                      }catch(e){}
+                      pushMetric('User expected damage per best move', txt);
+                    }
+                    if (v.enemyExpected != null) {
+                      let txt = v.enemyExpected.toFixed(2);
+                      try{
+                        const dr = v.enemyBestDr ? v.enemyBestDr : null;
+                        if (dr && dr.defender && dr.defender.hp){ const pct = (dr.expected / dr.defender.hp) * 100; txt += ` (${pct.toFixed(1)}%)`; }
+                      }catch(e){}
+                      pushMetric('Enemy expected damage per best move', txt);
+                    }
+                    if (v.userBestMove) {
+                      try{
+                        const dr = v.userBestMove.dr || null;
+                        let suffix = '';
+                        if (dr && dr.defender && dr.defender.hp){ const pct = (dr.expected / dr.defender.hp) * 100; suffix = ` (${pct.toFixed(1)}%)`; }
+                        pushMetric('User best move', `${v.userBestMove.id} (expected ${v.userBestMove.expected || 0}${v.userBestMove.max ? `, max ${v.userBestMove.max}` : ''}${suffix})`);
+                      }catch(e){ pushMetric('User best move', `${v.userBestMove.id} (expected ${v.userBestMove.expected || 0}${v.userBestMove.max ? `, max ${v.userBestMove.max}` : ''})`); }
+                    }
                     if (v.enemyBestMove) pushMetric('Enemy best move', v.enemyBestMove);
                     content.appendChild(mlist);
-                    const appendBreakdown = (titleText, dr, showMoveName)=>{ const block = document.createElement('div'); block.style.marginTop = '10px'; const t = document.createElement('div'); t.style.fontWeight='700'; t.textContent = titleText; block.appendChild(t); const p = document.createElement('pre'); p.style.whiteSpace='pre-wrap'; p.style.fontSize='12px'; p.style.margin='6px 0'; const lines = []; if (showMoveName && dr && dr.move) lines.push(`Move: ${dr.move}`); if (dr) { lines.push(`Power: ${dr.power}`); if (dr.type) lines.push(`Type: ${dr.type}`); if (dr.category) lines.push(`Category: ${dr.category}`); if (dr.attacker){ if (dr.category === 'physical') lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, Level=${dr.attacker.level}`); else if (dr.category === 'special') lines.push(`Attacker stats used: SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`); else lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`); } if (dr.defender){ if (dr.category === 'physical') lines.push(`Defender stats used: Def=${dr.defender.defStat}, HP=${dr.defender.hp}`); else if (dr.category === 'special') lines.push(`Defender stats used: SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`); else lines.push(`Defender stats used: Def=${dr.defender.defStat}, SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`); } lines.push(`Raw base (game formula): ${dr.rawBase}`); lines.push(`STAB: ${dr.stab}`); lines.push(`Effectiveness: ${dr.effectiveness}`); lines.push(`Combined modifier (STAB * effectiveness): ${dr.modifier.toFixed(3)}`); if (dr.badgesApplied && dr.badgesApplied.length) lines.push(`Badge multiplier: ${dr.badgeMultiplier.toFixed(3)} (applied: ${dr.badgesApplied.join(', ')})`); lines.push(`True base after modifiers (floored): ${dr.trueBase}`); lines.push(`Rolls (85..100): ${dr.rolls.join(', ')}`); lines.push(`min: ${dr.min}, max: ${dr.max}, expected (mean): ${dr.expected.toFixed(2)}`); } p.textContent = lines.join('\n'); block.appendChild(p); content.appendChild(block); };
+                    const appendBreakdown = (titleText, dr, showMoveName)=>{
+                      const block = document.createElement('div');
+                      block.style.marginTop = '10px';
+                      const t = document.createElement('div');
+                      t.style.fontWeight = '700';
+                      t.textContent = titleText;
+                      block.appendChild(t);
+                      const p = document.createElement('pre');
+                      p.style.whiteSpace = 'pre-wrap';
+                      p.style.fontSize = '12px';
+                      p.style.margin = '6px 0';
+                      const lines = [];
+                      if (showMoveName && dr && dr.move) lines.push(`Move: ${dr.move}`);
+                      if (dr){
+                        lines.push(`Power: ${dr.power}`);
+                        if (dr.type) lines.push(`Type: ${dr.type}`);
+                        if (dr.category) lines.push(`Category: ${dr.category}`);
+                        if (dr.attacker){
+                          if (dr.category === 'physical') lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, Level=${dr.attacker.level}`);
+                          else if (dr.category === 'special') lines.push(`Attacker stats used: SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`);
+                          else lines.push(`Attacker stats used: Atk=${dr.attacker.atkStat}, SpA=${dr.attacker.spaStat||'N/A'}, Level=${dr.attacker.level}`);
+                        }
+                        if (dr.defender){
+                          if (dr.category === 'physical') lines.push(`Defender stats used: Def=${dr.defender.defStat}, HP=${dr.defender.hp}`);
+                          else if (dr.category === 'special') lines.push(`Defender stats used: SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`);
+                          else lines.push(`Defender stats used: Def=${dr.defender.defStat}, SpD=${dr.defender.spdStat||'N/A'}, HP=${dr.defender.hp}`);
+                        }
+                        lines.push(`Raw base (game formula): ${dr.rawBase}`);
+                        lines.push(`STAB: ${dr.stab}`);
+                        // Compute effectiveness display: include ability-driven modifiers like Thick Fat
+                        try{
+                          const effBase = (typeof dr.effectivenessBase !== 'undefined') ? dr.effectivenessBase : dr.effectiveness;
+                          let effMultiplier = 1.0;
+                          const effAbilityNames = [];
+                          if (dr.appliedAbilities && Array.isArray(dr.appliedAbilities)){
+                            for (const a of dr.appliedAbilities){
+                              if (a && a.ability === 'ABILITY_THICK_FAT'){
+                                effMultiplier *= 0.5;
+                                effAbilityNames.push(prettyAbility(a.ability));
+                              }
+                            }
+                          }
+                          const finalEff = effBase * effMultiplier;
+                          if (effAbilityNames.length){
+                            const note = effAbilityNames.join(', ');
+                            lines.push(`Effectiveness: ${finalEff} (${effBase} * ${note} ability)`);
+                          } else {
+                            lines.push(`Effectiveness: ${finalEff}`);
+                          }
+                          const combined = (dr.stab || 1) * finalEff;
+                          lines.push(`Combined modifier (STAB * effectiveness): ${combined.toFixed(3)}`);
+                        }catch(e){
+                          lines.push(`Effectiveness: ${dr.effectiveness}`);
+                          lines.push(`Combined modifier (STAB * effectiveness): ${dr.modifier.toFixed(3)}`);
+                        }
+                        if (dr.badgesApplied && dr.badgesApplied.length) lines.push(`Badge multiplier: ${dr.badgeMultiplier.toFixed(3)} (applied: ${dr.badgesApplied.join(', ')})`);
+                        lines.push(`True base after modifiers (floored): ${dr.trueBase}`);
+                        lines.push(`Rolls (85..100): ${dr.rolls.join(', ')}`);
+                        try{
+                          const pct = (dr.defender && dr.defender.hp) ? (dr.expected / dr.defender.hp) * 100 : null;
+                          lines.push(`min: ${dr.min}, max: ${dr.max}, expected (mean): ${dr.expected.toFixed(2)}${pct!=null ? ` (${pct.toFixed(1)}%)` : ''}`);
+                        }catch(e){
+                          lines.push(`min: ${dr.min}, max: ${dr.max}, expected (mean): ${dr.expected.toFixed(2)}`);
+                        }
+                      }
+                      p.textContent = lines.join('\n');
+                      block.appendChild(p);
+                      content.appendChild(block);
+                    };
                     if (v.userBestMove && v.userBestMove.dr) appendBreakdown('User best move damage breakdown', v.userBestMove.dr, true);
                     if (v.enemyBestDr){ if (v.enemyBestMove) v.enemyBestDr.move = v.enemyBestMove; appendBreakdown('Enemy best move damage breakdown', v.enemyBestDr, true); }
                     box.appendChild(content); modal.appendChild(box); modal.addEventListener('click', (evt)=>{ if (evt.target === modal) modal.remove(); }); document.body.appendChild(modal);
@@ -2540,8 +2798,9 @@ function createPlannedTeamArea(speciesList){
   let saved = [];
   const storageKeyNatures = 'emerald_planned_team_natures';
   let savedNatures = [];
-  const storageKeyGenders = 'emerald_planned_team_genders';
-  let savedGenders = [];
+  const storageKeyAbilities = 'emerald_planned_team_abilities';
+  let savedAbilities = [];
+  try{ savedAbilities = window.__emerald_planned_team_abilities || []; }catch(e){}
 
   for (let i=0;i<6;i++){
     const slot = document.createElement('div');
@@ -2628,11 +2887,11 @@ function createPlannedTeamArea(speciesList){
     natSel.style.fontSize = '13px';
     leftCol.appendChild(natWrap);
 
-    // Gender selector (Planned Team slot)
-    const { wrapper: genWrap, sel: genSel } = createSelect('Gender', ['(none)','Male','Female','Unknown']);
-    genWrap.style.marginTop = '6px';
-    genSel.style.fontSize = '13px';
-    leftCol.appendChild(genWrap);
+    // Ability selector (Planned Team slot) - will be populated when species is selected
+    const { wrapper: abilityWrap, sel: abilitySel } = createSelect('Ability', []);
+    abilityWrap.style.marginTop = '6px';
+    abilitySel.style.fontSize = '13px';
+    leftCol.appendChild(abilityWrap);
 
     // right: stat bars
     const statContainer = createStatBarsContainer();
@@ -2694,6 +2953,36 @@ function createPlannedTeamArea(speciesList){
       // do NOT persist to localStorage by default; keep only in-memory
       saved[idx] = name;
       try{ window.__emerald_planned_team = saved; }catch(e){}
+
+      // populate ability selector for this species using species JSON or species_info.h
+      (async ()=>{
+        try{
+          let abilities = null;
+          if (data && Array.isArray(data.abilities) && data.abilities.length>0) abilities = data.abilities;
+          if (!abilities){
+            const si = await getSpeciesInfoByName(name);
+            if (si && si.info && Array.isArray(si.info.abilities)) abilities = si.info.abilities;
+          }
+          // clear current options
+          abilitySel.innerHTML = '';
+          // filter out ABILITY_NONE entries and add available abilities
+          const clean = (abilities && abilities.length) ? abilities.filter(a=>a && a !== 'ABILITY_NONE') : [];
+          if (clean.length){
+            for (const a of clean){
+              const opt = document.createElement('option'); opt.value = a; opt.textContent = prettyAbility(a); abilitySel.appendChild(opt);
+            }
+          }
+          // choose default: prefer saved value if it exists in the new options,
+          // otherwise select the first available ability (if any)
+          let sv = savedAbilities[idx];
+          if (sv && !clean.includes(sv)) sv = null;
+          if (!sv) sv = (clean.length ? clean[0] : null);
+          if (sv) abilitySel.value = sv;
+          // persist default selection into savedAbilities/window global
+          savedAbilities[idx] = sv || null;
+          try{ window.__emerald_planned_team_abilities = savedAbilities; }catch(e){}
+        }catch(e){ /* ignore */ }
+      })();
     }
 
     // handle nature changes
@@ -2721,16 +3010,15 @@ function createPlannedTeamArea(speciesList){
       // restore nature selection if present
       const sn = savedNatures[i] || '(none)';
       natSel.value = sn;
-      // restore gender selection if present
-      const sg = savedGenders[i] || '(none)';
-      genSel.value = sg;
+      // restore ability selection if present (will be respected when species populates options)
+      // (no immediate action here to avoid racing with async species parsing)
     }
 
-    // handle gender changes for planned slot
-    genSel.addEventListener('change', ()=>{
-      const gv = genSel.value;
-      if (!gv || gv === '(none)') savedGenders[i] = null; else savedGenders[i] = gv;
-      try{ window.__emerald_planned_team_genders = savedGenders; }catch(e){}
+    // handle ability changes for planned slot
+    abilitySel.addEventListener('change', ()=>{
+      const av = abilitySel.value;
+      savedAbilities[i] = av || null;
+      try{ window.__emerald_planned_team_abilities = savedAbilities; }catch(e){}
     });
   }
 
