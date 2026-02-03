@@ -773,9 +773,16 @@ const MOVE_TYPE = {
 };
 
 function isStatusMove(moveToken){
-  const statusKeywords = ['GROWL','TAIL_WHIP','SYNTHESIS','GROWTH','SLEEP','POWDER','TOXIC','ROAR','REST','SAND_ATTACK','CONFUSION','AGILITY','SANDSTORM','DOUBLE_TEAM','TELEPORT','LOCK_ON','MORNING_SUN'];
+  // Note: tokens must be matched carefully — some names like CONFUSION are actual attacking moves
+  const statusKeywords = ['GROWL','TAIL_WHIP','SYNTHESIS','GROWTH','SLEEP','POWDER','TOXIC','ROAR','REST','SAND_ATTACK','AGILITY','SANDSTORM','DOUBLE_TEAM','TELEPORT','LOCK_ON','MORNING_SUN'];
   for (const k of statusKeywords){ if (moveToken.includes(k)) return true; }
   return false;
+}
+
+function isSetupMoveToken(mv){
+  if (!mv) return false;
+  const s = String(mv).toUpperCase();
+  return /SWORDS?_DANCE|BELLY_DRUM|DRAGON_DANCE|CURSE|GROWTH|IRON_DEFENSE|AMNESIA|COSMIC_POWER|CALM_MIND|BULK_UP|CHARGE|AGILITY/.test(s);
 }
 
 async function selectBestSTABMove(speciesNameOrToken, level, trainer=null){
@@ -1417,13 +1424,172 @@ async function computePairScore(userMon, enemyMon, context = {}){
   // assemble detailed result object
   const userBestMoveObj = bestUser.move ? { id: bestUser.move, expected: bestUser.expected || 0, max: (bestUser.dr && bestUser.dr.max) || null, dr: bestUser.dr || null } : null;
 
-  if (uSpe > eSpe && hitsToKOUser === 1 && userExpected > 0) return { total: 10, offense, defense, speed: speedPts, reason: 'fast-ohko', userExpected, enemyExpected, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, enemyBestDr: null, enemyBestMove: enemyBestMoveToken };
+  // Capture fast OHKO as a candidate but do not return immediately — allow setup-route
+  // evaluation to run so we can prefer setup when appropriate (especially on ties).
+  let fastOhkoCandidate = null;
+  if (uSpe > eSpe && hitsToKOUser === 1 && userExpected > 0){
+    fastOhkoCandidate = { total: 10, offense, defense, speed: speedPts, reason: 'fast-ohko', userExpected, enemyExpected, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, enemyBestDr: null, enemyBestMove: enemyBestMoveToken };
+  }
   if (enemyExpected === 0 && userExpected > 0) return { total: 10, offense, defense, speed: speedPts, reason: 'immune-no-damage', userExpected, enemyExpected, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, enemyBestDr: null, enemyBestMove: enemyBestMoveToken };
 
   const total = Math.min(10, offense + defense + speedPts);
   // include enemy best damage result if available
   const enemyBestDr = (enemyBest && enemyBest.dr) ? enemyBest.dr : null;
-  return { total, offense, defense, speed: speedPts, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, userExpected, enemyExpected, enemyBestDr, enemyBestMove: enemyBestMoveToken };
+  let result = { total, offense, defense, speed: speedPts, hitsToKOUser, hitsToKOEnemy, userBestMove: userBestMoveObj, userExpected, enemyExpected, enemyBestDr, enemyBestMove: enemyBestMoveToken };
+
+  // --- Setup-route evaluation (Route B) per specification ---
+  // helpers: classify setup moves and evaluate viability
+  function isSetupMoveToken(mv){ if (!mv) return false; const s = String(mv).toUpperCase(); return /SWORDS?_DANCE|BELLY_DRUM|DRAGON_DANCE|CURSE|GROWTH|IRON_DEFENSE|AMNESIA|COSMIC_POWER|CALM_MIND|BULK_UP|CHARGE|AGILITY/.test(s); }
+
+  function classifySetupEffects(mv){ const name = String(mv).toUpperCase(); const out = { atk:0, spa:0, def:0, spd:0, spe:0, hpDeltaPct:0, special:'', accuracy:100 };
+    if (/SWORDS?_DANCE/.test(name)) out.atk = 2;
+    if (/BELLY_DRUM/.test(name)) { out.atk = 6; out.hpDeltaPct = -0.5; }
+    if (/DRAGON_DANCE/.test(name)) { out.atk = 1; out.spe = 1; }
+    if (/CURSE/.test(name)) { /* non-Ghost */ out.atk = 1; out.def = 1; out.spe = -1; }
+    if (/GROWTH/.test(name)) out.spa = 1;
+    if (/IRON_DEFENSE/.test(name)) out.def = 2;
+    if (/AMNESIA/.test(name)) out.spd = 2;
+    if (/COSMIC_POWER/.test(name)) { out.def = 1; out.spd = 1; }
+    if (/CALM_MIND/.test(name)) { out.spa = 1; out.spd = 1; }
+    if (/BULK_UP/.test(name)) { out.atk = 1; out.def = 1; }
+    if (/CHARGE/.test(name)) { out.spd = 1; out.special = 'charge'; }
+    if (/AGILITY/.test(name)) out.spe = 2;
+    // accuracy if move has explicit accuracy in MOVE data will be applied later
+    return out;
+  }
+
+  const setupMoves = (moves || []).filter(mv => mv && isSetupMoveToken(mv));
+  async function evaluateSetupRoute(singleSetupMove){
+    // returns { score, details }
+    const movesMapLocal = await loadBattleMovesH();
+    const setupInfo = classifySetupEffects(singleSetupMove);
+    // opponent strongest damaging move
+    const enemyThreat = await computeEnemyBestHit(enemyMon, userMon, context);
+    const ourHP = (uStats && uStats.hp) ? uStats.hp : 1;
+    const dAbs = (enemyThreat && enemyThreat.maxDamage) ? enemyThreat.maxDamage : (enemyThreat && enemyThreat.expectedDamage ? enemyThreat.expectedDamage : 0);
+    const dFrac = ourHP > 0 ? (dAbs / ourHP) : 1;
+    const dPercent = dFrac * 100;
+    // special handling for Belly Drum
+    let safetyTier = 'unsafe'; let scoreSetup = 0; let reason = '';
+    if (setupInfo.atk === 6 && setupInfo.hpDeltaPct === -0.5){
+      // Belly Drum thresholds
+      if (dFrac < 0.25){ safetyTier = 'safe'; scoreSetup = 10; }
+      else if (dFrac < 0.5){ safetyTier = 'risky'; scoreSetup = 9; }
+      else { safetyTier = 'fail'; scoreSetup = 0; }
+    } else {
+      // non-belly thresholds
+      if (dFrac < (1/3)){ safetyTier = 'safe'; scoreSetup = 10; }
+      else if (dFrac < 0.5){ safetyTier = 'risky'; scoreSetup = 9; }
+      else { safetyTier = 'unsafe'; scoreSetup = 8; }
+    }
+
+    // Defensive setup adjustment: if setup grants def/spd boosts, simulate reductions
+    const defenseBoostStages = Math.max(0, (setupInfo.def||0) + (setupInfo.spd||0));
+    if (defenseBoostStages > 0 && safetyTier !== 'safe'){
+      // apply boost multipliers and recompute non-crit max damage
+      const stageToMult = (s)=> Math.min(4.0, 1.0 + 0.5 * s); // +1 ->1.5, +2->2.0, etc.
+      const defMult = stageToMult(setupInfo.def || 0);
+      const spdMult = stageToMult(setupInfo.spd || 0);
+      // clone our stats and apply defensive multipliers
+      const boosted = Object.assign({}, uStats);
+      if (boosted.def) boosted.def = Math.max(1, Math.floor(boosted.def * defMult));
+      if (boosted.spd) boosted.spd = Math.max(1, Math.floor(boosted.spd * spdMult));
+      // recompute enemy non-crit max damage using calcDamageRange (max value)
+      const drBoosted = await calcDamageRange(enemyMon.species, enemyMon.level||enemyMon.lvl||50, userMon.species, userMon.level||userMon.lvl||50, enemyThreat.bestMove || enemyThreat.bestMove, Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: boosted, attAbility: enemyMon.ability||null, defAbility: userMon.ability||null }));
+      const dBoostAbs = (drBoosted && drBoosted.max) ? drBoosted.max : dAbs;
+      const dBoostFrac = ourHP>0 ? (dBoostAbs / ourHP) : 1;
+      if (dBoostFrac < (1/3)) { safetyTier = 'safe'; scoreSetup = 10; }
+      else if (dBoostFrac < 0.5) { safetyTier = 'risky'; scoreSetup = 9; }
+      else {
+        // scale down based on required boosts
+        if (defenseBoostStages <= 2) scoreSetup = 8;
+        else if (defenseBoostStages <=4) scoreSetup = 7;
+        else scoreSetup = 6;
+      }
+    }
+
+    // Post-setup sweep evaluation: check if after applying offensive boosts we can OHKO or outspeed & OHKO
+    let sweepAchieved = false; let sweepDetails = null;
+    // create boosted attacker stats
+    const atkBoostStages = Math.max(0, setupInfo.atk || 0);
+    if (scoreSetup > 0){
+      const stageToMult = (s)=> Math.min(4.0, 1.0 + 0.5 * s);
+      const atkMult = stageToMult(atkBoostStages);
+      const spaMult = stageToMult(setupInfo.spa || 0);
+      const speMult = stageToMult(Math.max(0, setupInfo.spe || 0));
+      const boostedA = Object.assign({}, uStats);
+      if (boostedA.atk) boostedA.atk = Math.max(1, Math.floor(boostedA.atk * atkMult));
+      if (boostedA.spa) boostedA.spa = Math.max(1, Math.floor(boostedA.spa * spaMult));
+      if (boostedA.spe) boostedA.spe = Math.max(1, Math.floor(boostedA.spe * speMult));
+      // evaluate best damaging move after boosts
+      let bestAfter = { move: null, min:0, max:0 };
+      for (const mv2 of moves || []){
+        if (!mv2) continue; if (isStatusMove(mv2)) continue;
+        const dr2 = await calcDamageRange(userMon.species, userMon.level||userMon.lvl||50, enemyMon.species, enemyMon.level||enemyMon.lvl||50, mv2, Object.assign({}, context, { attStats: boostedA, defStats: enemyMon.statsFinal || enemyMon.stats || null, attAbility: userMon.ability||null, defAbility: enemyMon.ability||null }));
+        if (!dr2) continue;
+        // check guarantee using min (must be min >= enemy HP to guarantee OHKO)
+        const enemyHP = (enemyMon.statsFinal && enemyMon.statsFinal.hp) ? enemyMon.statsFinal.hp : 1;
+        const guaranteed = dr2.min >= enemyHP;
+        const likely = dr2.max >= enemyHP;
+        if (guaranteed){ bestAfter = { move: mv2, min: dr2.min, max: dr2.max, dr: dr2 }; sweepAchieved = true; sweepDetails = { guaranteed:true, move:mv2, dr: dr2 }; break; }
+        if (likely && !bestAfter.move) bestAfter = { move: mv2, min: dr2.min, max: dr2.max, dr: dr2 };
+      }
+      // if guaranteed OHKO found, compute accuracy cap
+      if (sweepAchieved && sweepDetails){ const acc = (movesMapLocal && movesMapLocal[sweepDetails.move] && movesMapLocal[sweepDetails.move].accuracy) ? movesMapLocal[sweepDetails.move].accuracy : 100; let accCap = 10; if (acc >= 100) accCap = 10; else if (acc >=90) accCap = 9; else if (acc >=80) accCap = 8; else accCap = 7; // if requires two hits reduce by 1 (not implemented: check hits)
+        // final setup score cannot exceed accCap
+        scoreSetup = Math.min(scoreSetup, accCap);
+      }
+    }
+
+    return { score: scoreSetup, move: singleSetupMove, dPercent, safetyTier, sweepAchieved, sweepDetails, enemyThreat, details: { setupInfo } };
+  }
+
+  // If this evaluation was already performed on an assumed boosted attacker (propagated from a
+  // prior safe setup in the same trainer), skip attempting to evaluate a new setup route.
+  const skipSetupEval = context && context.assumedSetupApplied;
+  if (skipSetupEval) result.chosenRoute = 'assumed-boost';
+
+  let bestSetup = null;
+  if (!skipSetupEval) {
+    for (const sm of setupMoves){ try{ const r = await evaluateSetupRoute(sm); if (!bestSetup || (r && r.score > bestSetup.score)) bestSetup = r; }catch(e){ /* ignore per-move errors */ } }
+  }
+  if (bestSetup && bestSetup.score != null){
+    // choose higher of non-setup total vs setup route
+    // Prefer setup route when it strictly improves the score, or when it's tied at the
+    // maximum score (10). This ensures we prefer documented setup assumptions over
+    // fast-OHKO heuristics when both would yield a perfect result.
+    const setupScore = (bestSetup.score || 0);
+    const currentScore = (result.total || 0);
+    if (setupScore > currentScore || (setupScore === currentScore && currentScore === 10)){
+      result.chosenRoute = 'setup';
+      result.setupInfo = bestSetup;
+      result.total = Math.max(1, Math.min(10, Math.round(setupScore)));
+    } else {
+      result.chosenRoute = 'no-setup';
+    }
+  } else {
+    result.chosenRoute = 'no-setup';
+  }
+
+  // If setup was not chosen but a fast-OHKO candidate existed, prefer the fast-OHKO
+  // result (this preserves the original fast-OHKO behavior when setup isn't selected).
+  if (fastOhkoCandidate && result.chosenRoute !== 'setup'){
+    // copy relevant fast-OHKO fields into result
+    result.reason = fastOhkoCandidate.reason;
+    result.total = fastOhkoCandidate.total;
+    result.offense = fastOhkoCandidate.offense;
+    result.defense = fastOhkoCandidate.defense;
+    result.speed = fastOhkoCandidate.speed;
+    result.userExpected = fastOhkoCandidate.userExpected;
+    result.enemyExpected = fastOhkoCandidate.enemyExpected;
+    result.hitsToKOUser = fastOhkoCandidate.hitsToKOUser;
+    result.hitsToKOEnemy = fastOhkoCandidate.hitsToKOEnemy;
+    result.userBestMove = fastOhkoCandidate.userBestMove;
+    result.enemyBestDr = fastOhkoCandidate.enemyBestDr;
+    result.enemyBestMove = fastOhkoCandidate.enemyBestMove;
+  }
+
+  return result;
 }
 
 async function evaluateMatchup(A, B, moveset, context = {}){
@@ -1610,12 +1776,12 @@ async function computeTrainerScore(trainer, plannedTeam){
     if (!si || !si.info || !si.info.baseStats) continue;
     const base = si.info.baseStats;
     const statsFinal = {
-      hp: computeStatFromBase(base.hp, 31, 0, playerLevelDefault, true),
-      atk: computeStatFromBase(base.atk, 31, 0, playerLevelDefault, false),
-      def: computeStatFromBase(base.def, 31, 0, playerLevelDefault, false),
-      spa: computeStatFromBase(base.spa, 31, 0, playerLevelDefault, false),
-      spd: computeStatFromBase(base.spd, 31, 0, playerLevelDefault, false),
-      spe: computeStatFromBase(base.spe, 31, 0, playerLevelDefault, false)
+      hp: computeStatFromBase(base.hp, 15, 0, playerLevelDefault, true),
+      atk: computeStatFromBase(base.atk, 15, 0, playerLevelDefault, false),
+      def: computeStatFromBase(base.def, 15, 0, playerLevelDefault, false),
+      spa: computeStatFromBase(base.spa, 15, 0, playerLevelDefault, false),
+      spd: computeStatFromBase(base.spd, 15, 0, playerLevelDefault, false),
+      spe: computeStatFromBase(base.spe, 15, 0, playerLevelDefault, false)
     };
     // apply nature if present
     const chosenNature = savedNatures[i] || null;
@@ -1638,36 +1804,22 @@ async function computeTrainerScore(trainer, plannedTeam){
       }
     }catch(e){ /* ignore */ }
     // (Badge boosts are applied later in calcDamageRange when computing damage)
-    // assemble candidate moves (top 4 by power+stab)
+    // assemble candidate moves (we'll finalize selection after we know enemy party types)
     const levelMoves = (lvlSets[chosenToken] || []).filter(m=>m.level <= battleLevel).map(m=>m.move);
     const tmMoves = (tmSets[chosenToken] || []);
     const types = (si.info.types || []);
     const availableTMs = getAvailableTMsForTrainer(trainer);
     const candidates = {};
-    for (const mv of levelMoves) if (!isStatusMove(mv)) candidates[mv]=true;
-    for (const mv of tmMoves) if (!isStatusMove(mv)){
-      if (availableTMs === null || availableTMs.has(mv)) candidates[mv]=true;
-    }
-    const candArr = Object.keys(candidates).map(mv=>{
-      const power = MOVE_POWER[mv] || 50;
-      const mtype = MOVE_TYPE[mv] || null;
-      const stab = (mtype && types.includes(mtype)) ? 50 : 0;
-      return { move: mv, score: power+stab };
+    for (const mv of levelMoves){ if (!mv) continue; candidates[mv]=true; }
+    for (const mv of tmMoves){ if (!mv) continue; if (availableTMs === null || availableTMs.has(mv)) candidates[mv]=true; }
+    // store candidate move list on the planned team entry; we'll score them against the trainer party later
+    // filter banned moves (e.g., Future Sight is impractical for single-turn scoring)
+    const bannedKeywords = ['FUTURE_SIGHT','FUTURE'];
+    const candidateMoveList = Object.keys(candidates).filter(Boolean).filter(mv=>{
+      try{ for (const k of bannedKeywords) if (mv && mv.toUpperCase().includes(k)) return false; }catch(e){}
+      return true;
     });
-    candArr.sort((a,b)=>b.score-a.score);
-    let moveset = candArr.slice(0,4).map(x=>x.move);
-    // fallback: if no candidates found (learnsets/tm mismatch), try selectBestSTABMove
-    if (moveset.length === 0){
-      const fallback = await selectBestSTABMove(chosenToken, battleLevel, null);
-      if (fallback){
-        moveset = [fallback];
-        console.debug('computeTrainerScore: fallback move for', chosenToken, '->', fallback);
-      } else {
-        console.debug('computeTrainerScore: no moves available for', chosenToken, 'at level', battleLevel);
-      }
-    }
-
-    teamMons.push({ species: chosenToken, level: battleLevel, statsFinal, moveset, dynamoApplied });
+    teamMons.push({ species: chosenToken, level: battleLevel, statsFinal, candidateMoves: candidateMoveList, dynamoApplied });
   }
 
   // build trainer party monstates
@@ -1689,7 +1841,8 @@ async function computeTrainerScore(trainer, plannedTeam){
       spd: computeStatFromBase(b.spd, 31, 0, lvl, false),
       spe: computeStatFromBase(b.spe, 31, 0, lvl, false)
     };
-    partyStates.push({ species: enemy.species, level: lvl, statsFinal: st, moves: enemy.moves || [] });
+    const enemyTypes = (si2 && si2.info && si2.info.types) ? si2.info.types : [];
+    partyStates.push({ species: enemy.species, level: lvl, statsFinal: st, moves: enemy.moves || [], types: enemyTypes });
   }
 
   if (teamMons.length === 0){
@@ -1697,6 +1850,87 @@ async function computeTrainerScore(trainer, plannedTeam){
     return 0;
   }
   console.debug('computeTrainerScore: evaluating trainer', trainer.name, 'teamMons', teamMons.map(m=>m.species), 'partySize', partyStates.length);
+  // Finalize movesets for planned team entries: prefer setup moves and moves that are
+  // super-effective against the trainer party. We keep up to 4 moves per mon.
+  const movesMap = await loadBattleMovesH();
+  const movesIndexFallback = MOVE_POWER; // local table fallback
+  for (const tm of teamMons){
+    try{
+      const cand = tm.candidateMoves || [];
+      const si = await getSpeciesInfoByName(prettySpecies(tm.species).toLowerCase()) || await getSpeciesInfoByName(tm.species);
+      const myTypes = (si && si.info && si.info.types) ? si.info.types : [];
+      const scored = [];
+      for (const mv of cand){
+        if (!mv) continue;
+        // determine power/type
+        let power = MOVE_POWER[mv] || 0;
+        let mtype = MOVE_TYPE[mv] || null;
+        try{ const resolved = await resolveMoveToken(mv); const mm = movesMap && (movesMap[resolved] || movesMap[mv]) ? (movesMap[resolved] || movesMap[mv]) : null; if (mm){ power = (mm.power == null ? 0 : mm.power); if (mm.type) mtype = mm.type; } }catch(e){}
+        const stab = (mtype && myTypes.includes(mtype)) ? 50 : 0;
+        let score = (power || 0) + stab;
+        // bonus for setup moves so they are always chosen if available
+        if (isSetupMoveToken(mv)) score += 1000;
+        // bonus for being super-effective against any member of the trainer party
+        try{
+          for (const en of partyStates){
+            const eff = typeEffectiveness(mtype, (en.types || []));
+            if (eff > 1) { score += 50; break; }
+          }
+        }catch(e){}
+        scored.push({ move: mv, score, power, mtype });
+      }
+      scored.sort((a,b)=>b.score - a.score);
+      // Selection rule: 1) prefer a setup move (Calm Mind, Swords Dance, etc.)
+      // 2) then strongest STAB move, 3) then highest-power move with a different type
+      const selected = [];
+      const setupCandidates = scored.filter(s => isSetupMoveToken(s.move));
+      if (setupCandidates.length > 0){
+        // pick the top-scoring setup move
+        selected.push(setupCandidates[0].move);
+      }
+
+      // find strongest STAB (by power) among damaging moves
+      const damaging = scored.filter(s => (s.power || 0) > 0);
+      let chosenStabMove = null;
+      let chosenStabType = null;
+      if (damaging.length > 0){
+        const stabCandidates = damaging.filter(s => s.mtype && myTypes.includes(s.mtype));
+        if (stabCandidates.length > 0){
+          stabCandidates.sort((a,b)=> (b.power||0) - (a.power||0));
+          chosenStabMove = stabCandidates[0].move;
+          chosenStabType = stabCandidates[0].mtype || MOVE_TYPE[chosenStabMove] || null;
+          if (selected.indexOf(chosenStabMove) === -1) selected.push(chosenStabMove);
+        }
+      }
+
+      // pick highest-power move whose type != chosenStabType
+      if (damaging.length > 0){
+        // if no STAB found, treat chosenStabType as null and pick highest-power overall
+        const candidatesForThird = damaging.slice().sort((a,b)=> (b.power||0) - (a.power||0));
+        for (const c of candidatesForThird){
+          if (selected.length >= 4) break;
+          const mtype = c.mtype || MOVE_TYPE[c.move] || null;
+          if (chosenStabType && mtype && chosenStabType === mtype) continue;
+          if (selected.indexOf(c.move) !== -1) continue;
+          selected.push(c.move);
+          break; // only pick one for the "different type" preference
+        }
+      }
+
+      // fill remaining slots with highest scored moves (avoid duplicates)
+      for (const s of scored){
+        if (selected.length >= 4) break;
+        if (selected.indexOf(s.move) === -1) selected.push(s.move);
+      }
+
+      if (selected.length === 0){
+        const fallback = await selectBestSTABMove(tm.species, tm.level, trainer);
+        if (fallback) selected.push(fallback);
+      }
+      tm.moveset = selected.slice(0,4);
+    }catch(e){ tm.moveset = tm.candidateMoves ? tm.candidateMoves.slice(0,4) : []; }
+  }
+
   const score = await scoreTeamVsTrainer(teamMons, partyStates, { enableFatigue: true });
   console.debug('computeTrainerScore: score for', trainer.name, '->', score);
   return score; // 1..10
@@ -2101,7 +2335,7 @@ function createTrainerCard(trainer, speciesList){
         spInput.value = '';
         slotTitle.textContent = '(none)';
         if (typeof setSlotPreview === 'function') setSlotPreview('');
-        lvInput.value = 50; ivInput.value = 31;
+        lvInput.value = 50; ivInput.value = 15;
         for (const k in evInputs) evInputs[k].value = 0;
         if (moveSelects) moveSelects.forEach(ms=>ms.value='');
         try{ computeAndRenderSlotStats().catch(()=>{}); }catch(e){}
@@ -2200,7 +2434,7 @@ function createTrainerCard(trainer, speciesList){
     // (Nature selector omitted from trainer slot - use Planned Team nature)
 
     // IV / EVs per stat / Level
-    const { wrapper: ivWrap, input: ivInput } = createInput('IV (0-31)', { type: 'number', min:0, max:31, value:31 });
+    const { wrapper: ivWrap, input: ivInput } = createInput('IV (0-31)', { type: 'number', min:0, max:31, value:15 });
     slot.appendChild(ivWrap);
 
     const evContainer = document.createElement('div');
@@ -2331,7 +2565,7 @@ function createTrainerCard(trainer, speciesList){
         }
       }catch(e){ base = null; }
       if (!base){ exactStatsDiv.textContent = 'Stats: —'; return; }
-      const ivVal = parseInt(ivInput.value,10) || 31;
+      const ivVal = parseInt(ivInput.value,10) || 15;
       const ivs = { hp: ivVal, atk: ivVal, def: ivVal, spa: ivVal, spd: ivVal, spe: ivVal };
       const evs = { hp: parseInt(evInputs.HP.value,10)||0, atk: parseInt(evInputs.Atk.value,10)||0, def: parseInt(evInputs.Def.value,10)||0, spa: parseInt(evInputs.SpA.value,10)||0, spd: parseInt(evInputs.SpD.value,10)||0, spe: parseInt(evInputs.Spe.value,10)||0 };
       const lvl = parseInt(lvInput.value,10) || 50;
@@ -2460,7 +2694,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     modal.style.position = 'fixed'; modal.style.left = '0'; modal.style.top = '0'; modal.style.width = '100%'; modal.style.height = '100%'; modal.style.background = 'rgba(0,0,0,0.35)'; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center'; modal.style.zIndex = '10000';
     const box = document.createElement('div'); box.style.background = '#fff'; box.style.borderRadius='8px'; box.style.padding='16px'; box.style.maxWidth='640px'; box.style.width='90%'; box.style.maxHeight='80%'; box.style.overflow='auto';
     const close = document.createElement('button'); close.textContent='Close'; close.style.float='right'; close.addEventListener('click', ()=> modal.remove()); box.appendChild(close);
-    const title = document.createElement('h3'); title.textContent = 'How team score is calculated'; box.appendChild(title);
+    const title = document.createElement('h3'); title.textContent = 'How team score is calculated (temporary system)'; box.appendChild(title);
     const p = document.createElement('div'); p.style.fontSize='13px'; p.style.lineHeight='1.4';
     p.innerHTML = `
       <p>The team score is computed from simulated, per-mon matchups between each planned-team Pokémon and each trainer party Pokémon. Each pairwise matchup produces a small 0–10 point score which is then aggregated into the trainer and team scores.</p>
@@ -2511,6 +2745,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       </ul>
 
       <p>Click any cell in the matchup matrix to see the numeric damage breakdowns used to compute hits-to-KO, applied abilities/notes (e.g. Thick Fat, Levitate, Absorb), and the intermediate numbers used to award offense/defense/speed points.</p>
+      <p><em>Note:</em> This scoring system is temporary and simplified for now — it will be refined and expanded in future updates to better reflect full battle simulations and edge cases.</p>
     `;
     box.appendChild(p);
     modal.appendChild(box); document.body.appendChild(modal);
@@ -2612,11 +2847,11 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         const candidates = {};
         for (const mv of levelMoves) {
           const up = String(mv).toUpperCase();
-          if (!isStatusMove(mv) && !up.includes('FOCUS_PUNCH') && !up.includes('HYPER_BEAM') && !up.includes('HYPERBEAM')) candidates[mv]=true;
+          if (!isStatusMove(mv) && !up.includes('FOCUS_PUNCH') && !up.includes('HYPER_BEAM') && !up.includes('HYPERBEAM') && !up.includes('FUTURE_SIGHT')) candidates[mv]=true;
         }
         for (const mv of tmMoves) {
           const up = String(mv).toUpperCase();
-          if (!isStatusMove(mv) && !up.includes('FOCUS_PUNCH') && !up.includes('HYPER_BEAM') && !up.includes('HYPERBEAM')){
+          if (!isStatusMove(mv) && !up.includes('FOCUS_PUNCH') && !up.includes('HYPER_BEAM') && !up.includes('HYPERBEAM') && !up.includes('FUTURE_SIGHT')){
             if (availableTMs === null || availableTMs.has(mv)) candidates[mv]=true;
           }
         }
@@ -2624,13 +2859,45 @@ document.addEventListener('DOMContentLoaded', async ()=>{
           const power = MOVE_POWER[mv] || 50;
           const mtype = MOVE_TYPE[mv] || null;
           const stab = (mtype && types.includes(mtype)) ? 50 : 0;
-          return { move: mv, score: power+stab };
+          return { move: mv, score: power+stab, type: mtype };
         });
         candArr.sort((a,b)=>b.score-a.score);
+        // Selection order for autofill: 1) setup move (e.g., Calm Mind), 2) strongest STAB, 3) highest-power move of a different type,
+        // then fill remaining slots with top-scoring moves.
+        const selectedMoves = [];
+        // 1) setup
+        const setupCandidates = candArr.filter(c => isSetupMoveToken(c.move));
+        if (setupCandidates.length > 0){ selectedMoves.push(setupCandidates[0].move); }
+        // 2) strongest STAB
+        const damaging = candArr.filter(c => (MOVE_POWER[c.move] || 0) > 0);
+        let chosenStabType = null;
+        if (damaging.length > 0){
+          const stabCands = damaging.filter(c => c.type && types.includes(c.type));
+          if (stabCands.length > 0){
+            stabCands.sort((a,b)=> (MOVE_POWER[b.move]||0) - (MOVE_POWER[a.move]||0));
+            const stabMove = stabCands[0].move;
+            chosenStabType = stabCands[0].type || MOVE_TYPE[stabMove] || null;
+            if (selectedMoves.indexOf(stabMove) === -1) selectedMoves.push(stabMove);
+          }
+        }
+        // 3) highest-power move with a different type than chosen STAB
+        if (damaging.length > 0){
+          const powerSorted = damaging.slice().sort((a,b)=> (MOVE_POWER[b.move]||0) - (MOVE_POWER[a.move]||0));
+          for (const p of powerSorted){
+            if (selectedMoves.length >= 4) break;
+            const mtype = p.type || MOVE_TYPE[p.move] || null;
+            if (chosenStabType && mtype && chosenStabType === mtype) continue;
+            if (selectedMoves.indexOf(p.move) !== -1) continue;
+            selectedMoves.push(p.move);
+            break;
+          }
+        }
+        // fill remaining slots with highest scoring remaining moves
+        for (const c of candArr){ if (selectedMoves.length >= 4) break; if (selectedMoves.indexOf(c.move) === -1) selectedMoves.push(c.move); }
         // ensure selects populated then set selected values
         if (ctrl.populateMoveSelectsForSlot) await ctrl.populateMoveSelectsForSlot();
         for (let k=0;k<4;k++){
-          let mv = candArr[k] ? candArr[k].move : null;
+          let mv = selectedMoves[k] ? selectedMoves[k] : null;
           // attempt to resolve non-canonical tokens (e.g., 'WaterGun' -> 'MOVE_WATER_GUN')
           try{
             const resolved = await resolveMoveToken(mv || '');
@@ -2647,7 +2914,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
             ctrl.moveSelects[k].value = mv || '';
           }
         }
-        ctrl.ivInput.value = 31;
+        ctrl.ivInput.value = 15;
         // trainer slot uses planned-team nature; do not set a per-slot nature selector
         Object.values(ctrl.evInputs).forEach(ei=>ei.value=0);
         // compute stats for this trainer slot if inputs are populated
@@ -2732,9 +2999,38 @@ document.addEventListener('DOMContentLoaded', async ()=>{
           const matrix = [];
           for (let ri=0; ri<teamMons.length; ri++){
             const row = [];
+            // per-row setup boost state: if a safe setup is achieved against a column, then for subsequent columns
+            // the user's mon should be evaluated with assumed +6 boosts (x4 multipliers) for stats the setup move affects.
+            let boostedStatsForRow = null;
+            let boostMeta = null;
             for (let ci=0; ci<partyStates.length; ci++){
-              const res = await computePairScore(teamMons[ri], partyStates[ci]);
+              let userForEval = teamMons[ri];
+              let computeContext = {};
+              if (boostedStatsForRow){ userForEval = Object.assign({}, teamMons[ri], { statsFinal: boostedStatsForRow }); computeContext.assumedSetupApplied = true; }
+              const res = await computePairScore(userForEval, partyStates[ci], computeContext);
+              // if this cell was computed using assumed boosts, annotate it
+              if (boostedStatsForRow && res) res.assumedSetupBoost = boostMeta;
               row.push(res);
+
+              // If we haven't yet applied boosts and this pairing produced a safe setup route, enable assumed +6 boosts for following columns
+              try{
+                if (!boostedStatsForRow && res && res.chosenRoute === 'setup' && res.setupInfo && res.setupInfo.safetyTier === 'safe'){
+                  const sd = (res.setupInfo && res.setupInfo.details && res.setupInfo.details.setupInfo) ? res.setupInfo.details.setupInfo : (res.setupInfo.setupInfo || null);
+                  if (sd){
+                    try{
+                      const baseStats = teamMons[ri].statsFinal || {};
+                      const boosted = Object.assign({}, baseStats);
+                      if (sd.atk && boosted.atk) boosted.atk = Math.max(1, Math.floor(boosted.atk * 4));
+                      if (sd.spa && boosted.spa) boosted.spa = Math.max(1, Math.floor(boosted.spa * 4));
+                      // assume speed also x4 per spec when setup achieved (apply to all assumed-boost evaluations)
+                      if (boosted.spe) boosted.spe = Math.max(1, Math.floor(boosted.spe * 4));
+                      if (sd.hpDeltaPct && boosted.hp) boosted.hp = Math.max(1, Math.floor(boosted.hp * (1 + sd.hpDeltaPct)));
+                      boostedStatsForRow = boosted;
+                      boostMeta = { sourceMove: res.setupInfo.move || null, boostedFrom: ci, setupDetails: sd };
+                    }catch(e){}
+                  }
+                }
+              }catch(e){}
             }
             matrix.push(row);
           }
@@ -2757,6 +3053,22 @@ document.addEventListener('DOMContentLoaded', async ()=>{
                 const v = matrix[ri][ci]; cell.textContent = v && v.total != null ? String(v.total) : '—';
                 if (v && typeof v === 'object'){
                   cell.style.cursor = 'pointer';
+                  // highlight cell when the setup-route was chosen
+                  try{
+                    if (v.chosenRoute === 'setup'){
+                      cell.style.background = '#fff4e6';
+                      cell.style.border = '1px solid #ffd699';
+                      cell.style.fontWeight = '700';
+                    }
+                    // Also visually mark cells that were computed using an assumed prior setup
+                    // (these are the remaining party members to the right after a safe setup).
+                    if (v.assumedSetupBoost){
+                      // use a dashed border and slightly different tint so users can distinguish
+                      cell.style.background = '#fff8f0';
+                      cell.style.border = '1px dashed #ffd699';
+                      cell.style.fontWeight = '700';
+                    }
+                  }catch(e){}
                   cell.title = 'Click to view calculation details';
                   cell.addEventListener('click', (ev)=>{
                     const existing = document.querySelector('.pair-breakdown-modal'); if (existing) existing.remove();
@@ -2773,6 +3085,41 @@ document.addEventListener('DOMContentLoaded', async ()=>{
                     const mlist = document.createElement('ul'); mlist.style.margin = '6px 0 8px 18px'; mlist.style.padding = '0'; mlist.style.listStyle = 'disc';
                     const pushMetric = (k,vv)=>{ const it = document.createElement('li'); it.textContent = `${k}: ${vv}`; mlist.appendChild(it); };
                     pushMetric('Total score', v.total);
+                    // show chosen route (setup vs no-setup)
+                    if (v.chosenRoute) pushMetric('Chosen route', v.chosenRoute);
+                    if (v.chosenRoute === 'setup' && v.setupInfo){
+                      try{
+                        const si = v.setupInfo;
+                        pushMetric('Setup move used', si.move || '(unknown)');
+                        pushMetric('Safety tier', si.safetyTier || '(unknown)');
+                        if (typeof si.dPercent === 'number') pushMetric('Max damage % used for thresholds', si.dPercent.toFixed(1) + '%');
+                        // show boosts assumed and multipliers
+                        const details = (si.details && si.details.setupInfo) ? si.details.setupInfo : null;
+                        if (details){
+                          const mk = (st)=>{ return Math.min(4.0, 1.0 + 0.5 * st); };
+                          if (details.atk) pushMetric('Assumed Attack stages', `+${details.atk} -> x${mk(details.atk).toFixed(2)}`);
+                          if (details.spa) pushMetric('Assumed Sp. Atk stages', `+${details.spa} -> x${mk(details.spa).toFixed(2)}`);
+                          if (details.def) pushMetric('Assumed Defense stages', `+${details.def} -> x${mk(details.def).toFixed(2)}`);
+                          if (details.spd) pushMetric('Assumed Sp. Def stages', `+${details.spd} -> x${mk(details.spd).toFixed(2)}`);
+                          if (details.spe) pushMetric('Assumed Speed stages', `+${details.spe} -> x${mk(details.spe).toFixed(2)}`);
+                          if (details.hpDeltaPct) pushMetric('HP change from move', `${(details.hpDeltaPct*100).toFixed(0)}%`);
+                        }
+                        if (si.sweepDetails && si.sweepDetails.dr){
+                          // show the post-setup move used and its damage
+                          try{ const sd = si.sweepDetails; pushMetric('Post-setup sweep move', sd.move || (sd.dr && sd.dr.move) || '(none)'); }catch(e){}
+                        }
+                      }catch(e){ }
+                    }
+                    // If this cell was calculated assuming a prior safe setup against an earlier party mon,
+                    // display the assumed boost metadata (applied to remaining party members).
+                    if (v.assumedSetupBoost){
+                      try{
+                        const a = v.assumedSetupBoost;
+                        pushMetric('Assumed prior setup', `Applied from column ${a.boostedFrom} — move ${a.sourceMove || '(unknown)'}`);
+                        const sd = a.setupDetails || null;
+                        if (sd){ const mk = (st)=> Math.min(4.0, 1.0 + 0.5 * st); if (sd.atk) pushMetric('Assumed Attack multiplier', `x${mk(6).toFixed(2)} (assumed +6)`); if (sd.spa) pushMetric('Assumed Sp. Atk multiplier', `x${mk(6).toFixed(2)} (assumed +6)`); /* always show assumed speed multiplier for propagated boosts */ pushMetric('Assumed Speed multiplier', `x${mk(6).toFixed(2)} (assumed +6)`); if (sd.hpDeltaPct) pushMetric('Assumed HP change', `${(sd.hpDeltaPct*100).toFixed(0)}%`); }
+                      }catch(e){}
+                    }
                     if (v.reason) pushMetric('Reason', v.reason);
                     pushMetric('Offense points', v.offense);
                     pushMetric('Defense points', v.defense);
@@ -3075,7 +3422,7 @@ function createPlannedTeamArea(speciesList){
         renderStatBars(statContainer, b, selNat);
         // compute exact stats for planned slot using default IV=31, EVs=0, Level=50
         try{
-          const out = calcAllStatsGen3({ baseStats: b, ivs: {hp:31,atk:31,def:31,spa:31,spd:31,spe:31}, evs: {hp:0,atk:0,def:0,spa:0,spd:0,spe:0}, level:50, nature: selNat||'Hardy' });
+          const out = calcAllStatsGen3({ baseStats: b, ivs: {hp:15,atk:15,def:15,spa:15,spd:15,spe:15}, evs: {hp:0,atk:0,def:0,spa:0,spd:0,spe:0}, level:50, nature: selNat||'Hardy' });
           // planned-team exact stats display intentionally omitted (use trainer slot view)
         }catch(e){ /* ignore */ }
       } else {
@@ -3086,7 +3433,7 @@ function createPlannedTeamArea(speciesList){
           const selNat = (savedNatures[idx] && savedNatures[idx] !== '(none)') ? savedNatures[idx] : null;
           renderStatBars(statContainer, b, selNat);
           try{
-            const out = calcAllStatsGen3({ baseStats: b, ivs: {hp:31,atk:31,def:31,spa:31,spd:31,spe:31}, evs: {hp:0,atk:0,def:0,spa:0,spd:0,spe:0}, level:50, nature: selNat||'Hardy' });
+            const out = calcAllStatsGen3({ baseStats: b, ivs: {hp:15,atk:15,def:15,spa:15,spd:15,spe:15}, evs: {hp:0,atk:0,def:0,spa:0,spd:0,spe:0}, level:50, nature: selNat||'Hardy' });
             // planned-team exact stats display intentionally omitted
           }catch(e){ /* ignore */ }
         } else {
