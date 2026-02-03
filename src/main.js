@@ -529,7 +529,7 @@ function collectAncestors(token, revMap, out = new Set()){
   return out;
 }
 
-async function devolveSpeciesToLegalAtLevel(nameOrToken, level){
+async function devolveSpeciesToLegalAtLevel(nameOrToken, level, trainerOrSeg = null){
   const evoTable = await loadEvolutions();
   const rev = buildReverseEvolutionMap(evoTable);
   // normalize incoming to a token if a name was provided
@@ -538,6 +538,7 @@ async function devolveSpeciesToLegalAtLevel(nameOrToken, level){
     const variants = nameToTokenVariants(nameOrToken);
     token = variants.length ? variants[0] : ('SPECIES_' + nameOrToken.toUpperCase().replace(/[^A-Z0-9]/g,'_'));
   }
+  const requested = token;
   // collect all ancestors including self
   const ancestors = Array.from(collectAncestors(token, rev));
   // compute minLevels for each ancestor
@@ -549,6 +550,75 @@ async function devolveSpeciesToLegalAtLevel(nameOrToken, level){
   for (const c of candidates){
     if (c.minLevel <= level) chosen = c.token;
   }
+
+  // Special-case rules for species that evolve by non-standard methods.
+  try{
+    // Determine progression segment: prefer trainer identity when provided
+    let seg = null;
+    if (trainerOrSeg != null){
+      if (typeof trainerOrSeg === 'number') seg = trainerOrSeg;
+      else if (typeof trainerOrSeg === 'object' && trainerOrSeg.name) seg = trainerNameToSegment(trainerOrSeg) || null;
+      else if (typeof trainerOrSeg === 'string') seg = parseInt(trainerOrSeg,10) || null;
+    }
+    if (seg == null) seg = approximateSegmentForLevel(parseInt(level||0,10));
+
+    // Shedinja/Nincada
+    if (chosen === 'SPECIES_SHEDINJA' && (parseInt(level||0,10) < 20)){
+      chosen = 'SPECIES_NINCADA';
+    }
+    // Crobat/Golbat: prefer Crobat at Wattson era
+    if (chosen === 'SPECIES_GOLBAT' && seg >= 3){ chosen = 'SPECIES_CROBAT'; }
+    if (chosen === 'SPECIES_CROBAT' && seg < 3){ chosen = 'SPECIES_ZUBAT'; }
+    // Bellossom: Oddish -> Gloom at Wattson (seg >=3), -> Bellossom at Flannery (seg >=4)
+    if (chosen === 'SPECIES_BELLOSSOM'){
+      if (seg < 3) chosen = 'SPECIES_ODDISH';
+      else if (seg < 4) chosen = 'SPECIES_GLOOM';
+      else chosen = 'SPECIES_BELLOSSOM';
+    }
+    // Vileplume: Oddish -> Gloom at Wattson (seg >=3), -> Vileplume at Winona (seg >=6)
+    if (chosen === 'SPECIES_VILEPLUME'){
+      if (seg < 3) chosen = 'SPECIES_ODDISH';
+      else if (seg < 6) chosen = 'SPECIES_GLOOM';
+      else chosen = 'SPECIES_VILEPLUME';
+    }
+    // Azumarill requested handling: Marill available from Roxanne (seg>=1),
+    // Azumarill available from Brawly (seg>=2). Avoid mapping to Azurill.
+    if (requested === 'SPECIES_AZUMARILL'){
+      if (seg >= 2) chosen = 'SPECIES_AZUMARILL';
+      else chosen = 'SPECIES_MARILL';
+    }
+    // Azumarill: don't devolve to Azurill (egg-only) when user explicitly
+    // requested Azumarill; prefer Marill instead since Marill can be caught.
+    if (chosen === 'SPECIES_AZURRIL' && requested === 'SPECIES_AZUMARILL'){
+      chosen = 'SPECIES_MARILL';
+    }
+    // Shiftry: if the user specifically requested Shiftry, keep it as Nuzleaf
+    // until Winona (seg >=6); otherwise respect candidate selection.
+    if (requested === 'SPECIES_SHIFTRY'){
+      if (seg < 6) chosen = 'SPECIES_NUZLEAF';
+      else chosen = 'SPECIES_SHIFTRY';
+    }
+    // Delcatty: if explicitly requested, keep as Skitty until Flannery (seg >=4)
+    if (requested === 'SPECIES_DELCATTY'){
+      if (seg < 4) chosen = 'SPECIES_SKITTY';
+      else chosen = 'SPECIES_DELCATTY';
+    }
+    // Milotic: if explicitly requested, keep as Feebas until Winona (seg >=6)
+    if (requested === 'SPECIES_MILOTIC'){
+      if (seg < 6) chosen = 'SPECIES_FEEBAS';
+      else chosen = 'SPECIES_MILOTIC';
+    }
+    // Ludicolo: if the user specifically requested Ludicolo, keep it as Lombre
+    // until Juan (seg >=8); if user requested Lombre/other, respect candidate selection.
+    if (requested === 'SPECIES_LUDICOLO'){
+      if (seg < 8) chosen = 'SPECIES_LOMBRE';
+      else chosen = 'SPECIES_LUDICOLO';
+    }
+    // Ninjask: require level 20 on Nincada
+    if (chosen === 'SPECIES_NINJASK' && (parseInt(level||0,10) < 20)){
+      chosen = 'SPECIES_NINCADA';
+    }
+  }catch(e){ /* ignore */ }
   return chosen;
 }
 
@@ -1530,7 +1600,7 @@ async function computeTrainerScore(trainer, plannedTeam){
   for (let i=0;i<6;i++){
     const name = plannedTeam[i];
     if (!name) continue;
-    const chosenToken = await devolveSpeciesToLegalAtLevel(name, playerLevelDefault);
+    const chosenToken = await devolveSpeciesToLegalAtLevel(name, playerLevelDefault, trainer);
     const displayName = prettySpecies(chosenToken).toLowerCase();
     const si = await getSpeciesInfoByName(displayName) || await getSpeciesInfoByName(chosenToken);
     if (!si || !si.info || !si.info.baseStats){
@@ -1645,7 +1715,7 @@ async function buildPlannedTeamMonStates(plannedTeam, trainer){
   for (let i=0;i<6;i++){
     const name = plannedTeam[i];
     if (!name) continue;
-    const chosenToken = await devolveSpeciesToLegalAtLevel(name, playerLevelDefault);
+    const chosenToken = await devolveSpeciesToLegalAtLevel(name, playerLevelDefault, trainer);
     const si = await getSpeciesInfoByName(prettySpecies(chosenToken).toLowerCase()) || await getSpeciesInfoByName(chosenToken);
     if (!si || !si.info || !si.info.baseStats) continue;
     const base = si.info.baseStats;
@@ -2368,6 +2438,83 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   calcBtn.title = 'Calculate team score';
   calcBtn.setAttribute('aria-label', 'Calculate team score');
   calcBtn.disabled = true;
+  // help icon: show scoring explanation
+  const calcHelpBtn = document.createElement('button');
+  calcHelpBtn.className = 'btn btn-link';
+  calcHelpBtn.style.marginLeft = '8px';
+  calcHelpBtn.style.padding = '6px';
+  calcHelpBtn.style.borderRadius = '50%';
+  calcHelpBtn.style.width = '28px';
+  calcHelpBtn.style.height = '28px';
+  calcHelpBtn.style.display = 'inline-flex';
+  calcHelpBtn.style.alignItems = 'center';
+  calcHelpBtn.style.justifyContent = 'center';
+  calcHelpBtn.style.border = '1px solid #ddd';
+  calcHelpBtn.style.background = '#fff';
+  calcHelpBtn.title = 'How is score calculated?';
+  calcHelpBtn.setAttribute('aria-label', 'How is score calculated');
+  calcHelpBtn.textContent = '?';
+  calcHelpBtn.addEventListener('click', ()=>{
+    const existing = document.querySelector('.score-explain-modal'); if (existing) existing.remove();
+    const modal = document.createElement('div'); modal.className = 'score-explain-modal';
+    modal.style.position = 'fixed'; modal.style.left = '0'; modal.style.top = '0'; modal.style.width = '100%'; modal.style.height = '100%'; modal.style.background = 'rgba(0,0,0,0.35)'; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center'; modal.style.zIndex = '10000';
+    const box = document.createElement('div'); box.style.background = '#fff'; box.style.borderRadius='8px'; box.style.padding='16px'; box.style.maxWidth='640px'; box.style.width='90%'; box.style.maxHeight='80%'; box.style.overflow='auto';
+    const close = document.createElement('button'); close.textContent='Close'; close.style.float='right'; close.addEventListener('click', ()=> modal.remove()); box.appendChild(close);
+    const title = document.createElement('h3'); title.textContent = 'How team score is calculated'; box.appendChild(title);
+    const p = document.createElement('div'); p.style.fontSize='13px'; p.style.lineHeight='1.4';
+    p.innerHTML = `
+      <p>The team score is computed from simulated, per-mon matchups between each planned-team Pokémon and each trainer party Pokémon. Each pairwise matchup produces a small 0–10 point score which is then aggregated into the trainer and team scores.</p>
+
+      <h4>Damage & move selection</h4>
+      <ul>
+        <li>For each matchup we compute exact stats for both Pokémon (including nature, EVs, badges, abilities) and evaluate each attacking move at the <em>mid randomness roll</em> (midpoint of the 85–100% damage variance, i.e. ~92.5%).</li>
+        <li>The "best move" for each side is the damaging move that yields the highest mid-roll damage. Status/0-power moves are ignored when any damaging move exists.</li>
+        <li>Damage is evaluated as percent of the target's HP at the mid-roll to compute expected hits-to-KO.</li>
+      </ul>
+
+      <h4>Point breakdown (per pairing)</h4>
+      <ul>
+        <li><strong>Offense (0–3 points)</strong>
+          <ul>
+            <li>3 points: your best move is a guaranteed OHKO (one hit KO at the mid-roll).</li>
+            <li>2 points: guaranteed 2HKO (faints within two mid-roll hits).</li>
+            <li>1 point: guaranteed 3HKO.</li>
+            <li>0 points: 4HKO or worse.</li>
+          </ul>
+        </li>
+        <li><strong>Defense (0–6 points)</strong>
+          <ul>
+            <li>6 points: your Pokémon can take 6 or more hits from the opponent's best damaging move before fainting.</li>
+            <li>5 points: survives 5 hits; 4 points: survives 4 hits; 3 points: 3 hits; 2 points: 2 hits; 1 point: 1 hit; 0 points: cannot survive a single hit.</li>
+          </ul>
+        </li>
+        <li><strong>Speed (0–1 points)</strong>
+          <ul>
+            <li>1.0 point: your Pokémon outspeeds the opponent.</li>
+            <li>0.5 point: speed tie.</li>
+            <li>0 points: opponent is faster.</li>
+          </ul>
+        </li>
+      </ul>
+
+      <h4>Exceptions (full-score shortcuts)</h4>
+      <ul>
+        <li>If your Pokémon both outspeeds the opponent <em>and</em> scores an OHKO, the pairing is awarded the full 10 points.</li>
+        <li>If your Pokémon takes zero damage from the opponent (for example due to immunity/absorb) and you have at least one damaging move that can hit the opponent, the pairing is awarded the full 10 points.</li>
+      </ul>
+
+      <h4>Aggregation into trainer & team scores</h4>
+      <ul>
+        <li>Each planned-team Pokémon is scored against every Pokémon in the enemy trainer's party. These per-pairing point totals are displayed in the matchup matrix.</li>
+        <li>For each enemy party slot we take the single best score across your planned Pokémon ("best score" column).</li>
+        <li>The trainer score is the average of those best scores across the trainer's whole party. The team score shown in the UI is an aggregation (average) of trainer scores for the trainers you selected.</li>
+      </ul>
+
+      <p>Click any cell in the matchup matrix to see the numeric damage breakdowns used to compute hits-to-KO, applied abilities/notes (e.g. Thick Fat, Levitate, Absorb), and the intermediate numbers used to award offense/defense/speed points.</p>
+    `;
+    box.appendChild(p);
+    modal.appendChild(box); document.body.appendChild(modal);
+  });
 
   // progress element and team score banner (shared)
   const __autoFillProgressEl = document.createElement('div');
@@ -2397,6 +2544,13 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
   globalAuto.appendChild(autofillBtn);
   globalAuto.appendChild(calcBtn);
+  // place the small circular help icon immediately after the Calculate button
+  calcHelpBtn.style.fontWeight = '700';
+  calcHelpBtn.style.fontSize = '13px';
+  calcHelpBtn.style.cursor = 'pointer';
+  calcHelpBtn.style.lineHeight = '1';
+  calcHelpBtn.style.marginLeft = '6px';
+  globalAuto.appendChild(calcHelpBtn);
   globalAuto.appendChild(__autoFillProgressEl);
   globalAuto.appendChild(__teamScoreBanner);
   appContainer.appendChild(globalAuto);
@@ -2430,7 +2584,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
           if (ctrl.moveSelects) ctrl.moveSelects.forEach(mi=>mi.value='');
           continue;
         }
-        const chosenToken = await devolveSpeciesToLegalAtLevel(plannedName, playerLevelDefault);
+        const chosenToken = await devolveSpeciesToLegalAtLevel(plannedName, playerLevelDefault, t);
         const displayName = prettySpecies(chosenToken).toLowerCase();
         ctrl.spInput.value = displayName;
         if (typeof ctrl.setSlotPreview === 'function') ctrl.setSlotPreview(displayName); else {
@@ -2756,7 +2910,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         if (nums.length){
           const avg = nums.reduce((a,b)=>a+b,0)/nums.length;
           __teamScoreText.textContent = `Team score: ${avg.toFixed(2)}/10`;
-          __teamScoreNote.textContent = 'Set exact moves below and recalibrate score per trainer for a more precise score.';
+          __teamScoreNote.textContent = 'Set exact moves below and recalibrate score for a more precise score.';
           __teamScoreBanner.style.display = 'flex';
         } else {
           __teamScoreText.textContent = 'Team score: —';
