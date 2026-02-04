@@ -176,9 +176,36 @@ const HOENN_BADGES = {
   'Dynamo Badge': { key: 'dynamo', stats: ['spe'] }
 };
 
-function loadActiveBadges(){
-  // Badges are always active by default (UI removed). Return all defined Hoenn badges.
-  try{ return new Set(Object.keys(HOENN_BADGES)); }catch(e){ return new Set(); }
+function loadActiveBadges(trainerOrSeg = null){
+  // Read saved badges from localStorage (if any)
+  let savedSet = null;
+  try{
+    const raw = localStorage.getItem('emerald_active_badges');
+    if (raw){ const arr = JSON.parse(raw || '[]'); if (Array.isArray(arr) && arr.length) savedSet = new Set(arr); }
+  }catch(e){}
+  // Compute allowed badges based on progression segment (defaults to segment 1)
+  try{
+    let seg = null;
+    if (trainerOrSeg != null){
+      if (typeof trainerOrSeg === 'number') seg = trainerOrSeg;
+      else if (typeof trainerOrSeg === 'object' && trainerOrSeg.name) seg = trainerNameToSegment(trainerOrSeg) || null;
+      else if (typeof trainerOrSeg === 'string') seg = parseInt(trainerOrSeg,10) || null;
+    }
+    if (seg == null) seg = 1;
+    const allowed = new Set();
+    for (const name of Object.keys(HOENN_BADGES)){
+      if (name === 'Mind Badge' && seg < 8) continue; // Mind badge not available until Juan
+      if (name === 'Stone Badge' && seg < 2) continue; // Stone badge not available until Brawly
+      allowed.add(name);
+    }
+    // If user saved badges, respect them but filter by allowed badges to prevent premature application
+    if (savedSet && savedSet.size > 0){
+      const filtered = new Set();
+      for (const s of savedSet){ if (allowed.has(s)) filtered.add(s); }
+      return filtered;
+    }
+    return allowed;
+  }catch(e){ return new Set(Object.keys(HOENN_BADGES)); }
 }
 
 function saveActiveBadges(set){
@@ -1010,6 +1037,8 @@ function typeEffectiveness(atkType, defTypes){
 
 // types that are special in Gen3
 const SPECIAL_TYPES = new Set(['fire','water','electric','grass','ice','psychic','dragon','dark']);
+// explicit physical-type set (complement of SPECIAL_TYPES in Gen3)
+const PHYSICAL_TYPES = new Set(['normal','rock','bug','ghost','steel','fighting','ground','poison','flying']);
 
 function computeStatFromBase(base, iv=31, ev=0, level=50, isHP=false){
   const ev4 = Math.floor(ev/4);
@@ -1102,13 +1131,15 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
   let badgesApplied = [];
   try{
     if (options.applyBadgeBonuses){
-      const active = loadActiveBadges();
-      if (active && active.size > 0){
+      const active = loadActiveBadges(options.trainer || null);
+      if (active && active.size > 0 && power && power > 0){
         const affectedStat = isSpecial ? 'spa' : 'atk';
         for (const b of active){
           const def = HOENN_BADGES[b] || Object.values(HOENN_BADGES).find(x=>x.key===b);
           if (!def) continue;
           if (def.stats.includes(affectedStat)){
+            // Only apply Stone Badge to physical moves (handled by affectedStat == 'atk') and
+            // ensure move has positive power (power>0) — handled by the enclosing check.
             badgeMultiplier *= 1.10;
             badgesApplied.push(b);
           }
@@ -1120,9 +1151,15 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
   // apply attacker ability stat modifiers before badges
   let A_afterAbility = A;
   try{
+    // Huge Power: doubles Attack but only for physical-category moves (or moves whose type is in PHYSICAL_TYPES)
     if (attAbility === 'ABILITY_HUGE_POWER'){
-      A_afterAbility = Math.floor(A_afterAbility * 2);
-      appliedAbilityNotes.push({ side: 'att', ability: attAbility, effect: 'Huge Power doubles Attack' });
+      try{
+        const appliesToThisMove = (power && power > 0) && (!isSpecial || (mtype && PHYSICAL_TYPES.has(mtype)));
+        if (appliesToThisMove){
+          A_afterAbility = Math.floor(A_afterAbility * 2);
+          appliedAbilityNotes.push({ side: 'att', ability: attAbility, effect: 'Huge Power doubles Attack (physical moves only)' });
+        }
+      }catch(e){}
     }
     if (attAbility === 'ABILITY_GUTS' && options.attStatus){
       A_afterAbility = Math.floor(A_afterAbility * 1.5);
@@ -1316,7 +1353,7 @@ async function computeEnemyBestHit(enemyMon, ourMon, context = {}){
         ourMon.species,
         ourMon.level || ourMon.level || 50,
         mv,
-        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null })
+        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null, trainer: context && context.trainer ? context.trainer : null })
       );
       candidates.push({ move: mv, expected: dmg.expected, max: dmg.max, dr: dmg });
     }
@@ -1331,7 +1368,7 @@ async function computeEnemyBestHit(enemyMon, ourMon, context = {}){
         ourMon.species,
         ourMon.level || ourMon.level || 50,
         mv,
-        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null })
+        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null, trainer: context && context.trainer ? context.trainer : null })
       );
       candidates.push({ move: mv, expected: dmg.expected, max: dmg.max, dr: dmg });
     }
@@ -1342,6 +1379,50 @@ async function computeEnemyBestHit(enemyMon, ourMon, context = {}){
   if (damaging.length > 0){
     damaging.sort((a,b)=>b.expected - a.expected);
     const best = damaging[0];
+    // Special-case: if the chosen move is Overheat, simulate repeated uses since
+    // Overheat lowers the user's Sp. Atk by 2 stages after the first use, and
+    // further uses stack up to -6 stages. Simulate the expected damage sequence
+    // across turns so callers can compute accurate hits-to-KO.
+    try{
+      const resolvedName = String(best.move).toUpperCase();
+      if (/OVERHEAT/.test(resolvedName)){
+        const seq = [];
+        const baseAttStats = enemyMon.statsFinal || enemyMon.stats || null;
+        const ourHP = (ourMon && (ourMon.statsFinal && ourMon.statsFinal.hp)) ? ourMon.statsFinal.hp : (ourMon && ourMon.stats && ourMon.stats.hp) ? ourMon.stats.hp : 1;
+        let remHP = ourHP;
+        let stagePenalty = 0; // 0 initially; after first use subtract 2, etc.
+        // helper for stage multiplier (handles negative stages)
+        const stageToMult = (s)=>{ if (s >= 0) return Math.min(4.0, 1.0 + 0.5 * s); return 2.0 / (2 - s); };
+        // simulate up to 8 uses (cap when stage reaches -6)
+        for (let turn=1; turn<=8 && remHP>0; turn++){
+          // compute current att stats for this turn
+          let attStats = baseAttStats ? Object.assign({}, baseAttStats) : null;
+          if (attStats && typeof attStats.spa === 'number'){
+            const mult = stageToMult(stagePenalty);
+            attStats.spa = Math.max(1, Math.floor(attStats.spa * mult));
+          }
+          // compute damage for this turn using expected value
+          const dr = await calcDamageRange(
+            enemyMon.species,
+            enemyMon.lvl || enemyMon.level || 50,
+            ourMon.species,
+            ourMon.level || ourMon.level || 50,
+            best.move,
+            Object.assign({}, context, { attStats: attStats, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null, trainer: context && context.trainer ? context.trainer : null })
+          );
+          const dmg = (dr && typeof dr.expected === 'number') ? dr.expected : ((dr && typeof dr.max === 'number') ? dr.max : 0);
+          seq.push({ turn, expected: dmg, dr });
+          remHP = Math.max(0, remHP - dmg);
+          // apply Overheat self-drop after this use for subsequent turns
+          stagePenalty = Math.max(-6, stagePenalty - 2);
+        }
+        // compute hits to KO from sequence
+        let cum = 0; let hitsToKO = Infinity; for (let i=0;i<seq.length;i++){ cum += seq[i].expected; if (cum >= ourHP){ hitsToKO = i+1; break; } }
+        // attach repeat simulation info to dr object for callers
+        if (best.dr) best.dr.repeatSequence = seq;
+        if (best.dr) best.dr.repeatHitsToKO = hitsToKO;
+      }
+    }catch(e){ /* ignore simulation errors */ }
     return { expectedDamage: best.expected, maxDamage: best.max, canDamage: best.max > 0 && (typeof best.dr.effectiveness === 'undefined' ? true : best.dr.effectiveness > 0), bestMove: best.move, dr: best.dr };
   }
   // If no damaging moves, prefer a move that is explicitly ineffective (effectiveness === 0),
@@ -1372,7 +1453,7 @@ async function computePairScore(userMon, enemyMon, context = {}){
   for (const mv of moves){
     if (!mv) continue;
     if (isStatusMove(mv)) continue;
-    const dr = await calcDamageRange(userMon.species, uLevel, enemyMon.species, eLevel, mv, { attStats: uStats, defStats: eStats, applyBadgeBonuses: true, attAbility: userMon.ability || null, defAbility: enemyMon.ability || null });
+    const dr = await calcDamageRange(userMon.species, uLevel, enemyMon.species, eLevel, mv, { attStats: uStats, defStats: eStats, applyBadgeBonuses: true, attAbility: userMon.ability || null, defAbility: enemyMon.ability || null, trainer: context && context.trainer ? context.trainer : null });
     if (dr.expected > bestUser.expected){ bestUser = { move: mv, expected: dr.expected, dr }; }
   }
 
@@ -1392,7 +1473,12 @@ async function computePairScore(userMon, enemyMon, context = {}){
   // hits to KO calculations (use expected-mid damage)
   const eps = 1e-6;
   const hitsToKOUser = userExpected > eps ? Math.ceil((eStats && eStats.hp ? eStats.hp : 1) / userExpected) : Infinity;
-  const hitsToKOEnemy = enemyExpected > eps ? Math.ceil((uStats && uStats.hp ? uStats.hp : 1) / enemyExpected) : Infinity;
+  let hitsToKOEnemy = Infinity;
+  if (enemyBest && enemyBest.dr && typeof enemyBest.dr.repeatHitsToKO === 'number' && isFinite(enemyBest.dr.repeatHitsToKO)){
+    hitsToKOEnemy = enemyBest.dr.repeatHitsToKO;
+  } else {
+    hitsToKOEnemy = enemyExpected > eps ? Math.ceil((uStats && uStats.hp ? uStats.hp : 1) / enemyExpected) : Infinity;
+  }
 
   // Offense points: 1=>3,2=>2,3=>1,>=4=>0
   let offense = 0;
@@ -1469,6 +1555,15 @@ async function computePairScore(userMon, enemyMon, context = {}){
     const dAbs = (enemyThreat && enemyThreat.maxDamage) ? enemyThreat.maxDamage : (enemyThreat && enemyThreat.expectedDamage ? enemyThreat.expectedDamage : 0);
     const dFrac = ourHP > 0 ? (dAbs / ourHP) : 1;
     const dPercent = dFrac * 100;
+    // simulate turn order: if opponent is faster and can KO before setup, block setup
+    try{
+      const ourSpe = (uStats && uStats.spe) ? uStats.spe : 0;
+      const oppSpe = (eStats && eStats.spe) ? eStats.spe : 0;
+      if (oppSpe > ourSpe && enemyThreat && enemyThreat.max && enemyThreat.max >= ourHP){
+        // enemy will act first and can KO in one hit - mark setup as failed
+        return { score: 0, details: { setupInfo, safetyTier: 'fail', dPercent, reason: 'enemy-first-ko' } };
+      }
+    }catch(e){}
     // special handling for Belly Drum
     let safetyTier = 'unsafe'; let scoreSetup = 0; let reason = '';
     if (setupInfo.atk === 6 && setupInfo.hpDeltaPct === -0.5){
@@ -1495,7 +1590,7 @@ async function computePairScore(userMon, enemyMon, context = {}){
       if (boosted.def) boosted.def = Math.max(1, Math.floor(boosted.def * defMult));
       if (boosted.spd) boosted.spd = Math.max(1, Math.floor(boosted.spd * spdMult));
       // recompute enemy non-crit max damage using calcDamageRange (max value)
-      const drBoosted = await calcDamageRange(enemyMon.species, enemyMon.level||enemyMon.lvl||50, userMon.species, userMon.level||userMon.lvl||50, enemyThreat.bestMove || enemyThreat.bestMove, Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: boosted, attAbility: enemyMon.ability||null, defAbility: userMon.ability||null }));
+      const drBoosted = await calcDamageRange(enemyMon.species, enemyMon.level||enemyMon.lvl||50, userMon.species, userMon.level||userMon.lvl||50, enemyThreat.bestMove || enemyThreat.bestMove, Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: boosted, attAbility: enemyMon.ability||null, defAbility: userMon.ability||null, trainer: context && context.trainer ? context.trainer : null }));
       const dBoostAbs = (drBoosted && drBoosted.max) ? drBoosted.max : dAbs;
       const dBoostFrac = ourHP>0 ? (dBoostAbs / ourHP) : 1;
       if (dBoostFrac < (1/3)) { safetyTier = 'safe'; scoreSetup = 10; }
@@ -1525,7 +1620,7 @@ async function computePairScore(userMon, enemyMon, context = {}){
       let bestAfter = { move: null, min:0, max:0 };
       for (const mv2 of moves || []){
         if (!mv2) continue; if (isStatusMove(mv2)) continue;
-        const dr2 = await calcDamageRange(userMon.species, userMon.level||userMon.lvl||50, enemyMon.species, enemyMon.level||enemyMon.lvl||50, mv2, Object.assign({}, context, { attStats: boostedA, defStats: enemyMon.statsFinal || enemyMon.stats || null, attAbility: userMon.ability||null, defAbility: enemyMon.ability||null }));
+        const dr2 = await calcDamageRange(userMon.species, userMon.level||userMon.lvl||50, enemyMon.species, enemyMon.level||enemyMon.lvl||50, mv2, Object.assign({}, context, { attStats: boostedA, defStats: enemyMon.statsFinal || enemyMon.stats || null, attAbility: userMon.ability||null, defAbility: enemyMon.ability||null, trainer: context && context.trainer ? context.trainer : null }));
         if (!dr2) continue;
         // check guarantee using min (must be min >= enemy HP to guarantee OHKO)
         const enemyHP = (enemyMon.statsFinal && enemyMon.statsFinal.hp) ? enemyMon.statsFinal.hp : 1;
@@ -1608,7 +1703,7 @@ async function evaluateMatchup(A, B, moveset, context = {}){
       B.species,
       B.level || B.lvl || 50,
       mv,
-      Object.assign({}, context, { attStats: A.statsFinal || A.stats || null, defStats: B.statsFinal || B.stats || null, applyBadgeBonuses: !!context.applyBadgeBonuses, attAbility: A.ability || null, defAbility: B.ability || null })
+      Object.assign({}, context, { attStats: A.statsFinal || A.stats || null, defStats: B.statsFinal || B.stats || null, applyBadgeBonuses: !!context.applyBadgeBonuses, attAbility: A.ability || null, defAbility: B.ability || null, trainer: context && context.trainer ? context.trainer : null })
     );
     const koClass = classifyKO(dmg, dmg.defHP || (B.statsFinal && B.statsFinal.hp) || 1);
     const outspeed = compareSpeed(A.statsFinal.spe, B.statsFinal.spe, context.speedTiePolicy);
@@ -2042,7 +2137,7 @@ async function computePerEnemyBest(teamMons, partyStates, context = {}){
         ourMon.species,
         ourMon.level || ourMon.level || 50,
         mv,
-        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null })
+        Object.assign({}, context, { attStats: enemyMon.statsFinal || enemyMon.stats || null, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null, trainer: context && context.trainer ? context.trainer : null })
       );
       damageInfo = dr;
     }
@@ -3007,6 +3102,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
               let userForEval = teamMons[ri];
               let computeContext = {};
               if (boostedStatsForRow){ userForEval = Object.assign({}, teamMons[ri], { statsFinal: boostedStatsForRow }); computeContext.assumedSetupApplied = true; }
+              // propagate trainer object so badge availability can depend on trainer progression
+              computeContext.trainer = t;
               const res = await computePairScore(userForEval, partyStates[ci], computeContext);
               // if this cell was computed using assumed boosts, annotate it
               if (boostedStatsForRow && res) res.assumedSetupBoost = boostMeta;
@@ -3016,7 +3113,14 @@ document.addEventListener('DOMContentLoaded', async ()=>{
               try{
                 if (!boostedStatsForRow && res && res.chosenRoute === 'setup' && res.setupInfo && res.setupInfo.safetyTier === 'safe'){
                   const sd = (res.setupInfo && res.setupInfo.details && res.setupInfo.details.setupInfo) ? res.setupInfo.details.setupInfo : (res.setupInfo.setupInfo || null);
-                  if (sd){
+                  // detect if the post-setup sweep move would self-faint (e.g., Self-Destruct/Explosion).
+                  // If so, do NOT propagate assumed +6 boosts because the user mon will faint and won't be
+                  // available for subsequent columns.
+                  const sweepMoveTok = res.setupInfo && res.setupInfo.sweepDetails && res.setupInfo.sweepDetails.move ? String(res.setupInfo.sweepDetails.move).toUpperCase() : null;
+                  const isSelfFaint = sweepMoveTok && (/SELF[_\s-]?DESTRUCT|EXPLOSION/.test(sweepMoveTok));
+                  if (isSelfFaint){
+                    try{ if (res && res.setupInfo) res.setupInfo.blockedBySelfFaint = true; }catch(e){}
+                  } else if (sd){
                     try{
                       const baseStats = teamMons[ri].statsFinal || {};
                       const boosted = Object.assign({}, baseStats);
@@ -3223,7 +3327,23 @@ document.addEventListener('DOMContentLoaded', async ()=>{
                       content.appendChild(block);
                     };
                     if (v.userBestMove && v.userBestMove.dr) appendBreakdown('User best move damage breakdown', v.userBestMove.dr, true);
-                    if (v.enemyBestDr){ if (v.enemyBestMove) v.enemyBestDr.move = v.enemyBestMove; appendBreakdown('Enemy best move damage breakdown', v.enemyBestDr, true); }
+                    if (v.enemyBestDr){ if (v.enemyBestMove) v.enemyBestDr.move = v.enemyBestMove; appendBreakdown('Enemy best move damage breakdown', v.enemyBestDr, true);
+                      // If the damage result includes a simulated repeat sequence (e.g., Overheat), render a turn-by-turn table
+                      try{
+                        const dr = v.enemyBestDr;
+                        if (dr && Array.isArray(dr.repeatSequence) && dr.repeatSequence.length){
+                          const seqBlock = document.createElement('div'); seqBlock.style.marginTop = '8px';
+                          const heading = document.createElement('div'); heading.style.fontWeight = '700'; heading.textContent = 'Enemy repeat-move simulation (turn-by-turn)'; seqBlock.appendChild(heading);
+                          const table = document.createElement('table'); table.style.width = '100%'; table.style.borderCollapse = 'collapse'; table.style.fontSize = '12px';
+                          const hdr = document.createElement('tr'); ['Turn','Expected dmg','Cumulative dmg','Remaining HP'].forEach(h=>{ const th = document.createElement('th'); th.textContent = h; th.style.textAlign='left'; th.style.padding='4px 6px'; th.style.borderBottom='1px solid #eee'; hdr.appendChild(th); }); table.appendChild(hdr);
+                          const ourDef = partyStates[ci];
+                          const ourHP = (ourDef && ourDef.statsFinal && typeof ourDef.statsFinal.hp === 'number') ? ourDef.statsFinal.hp : (ourDef && ourDef.stats && typeof ourDef.stats.hp === 'number' ? ourDef.stats.hp : null);
+                          let cum = 0; let rem = ourHP;
+                          for (const item of dr.repeatSequence){ const trr = document.createElement('tr'); const tdTurn = document.createElement('td'); tdTurn.style.padding='4px 6px'; tdTurn.textContent = String(item.turn); trr.appendChild(tdTurn); const tdD = document.createElement('td'); tdD.style.padding='4px 6px'; tdD.textContent = (typeof item.expected === 'number') ? item.expected.toFixed(2) : String(item.expected); trr.appendChild(tdD); cum += (typeof item.expected === 'number') ? item.expected : 0; const tdCum = document.createElement('td'); tdCum.style.padding='4px 6px'; tdCum.textContent = cum.toFixed(2); trr.appendChild(tdCum); const tdRem = document.createElement('td'); tdRem.style.padding='4px 6px'; tdRem.textContent = ourHP != null ? Math.max(0, (ourHP - cum)).toFixed(2) : '—'; trr.appendChild(tdRem); table.appendChild(trr); }
+                          seqBlock.appendChild(table); content.appendChild(seqBlock);
+                        }
+                      }catch(e){}
+                    }
                     box.appendChild(content); modal.appendChild(box); modal.addEventListener('click', (evt)=>{ if (evt.target === modal) modal.remove(); }); document.body.appendChild(modal);
                   });
                 }
