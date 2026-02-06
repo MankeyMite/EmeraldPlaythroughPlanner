@@ -486,11 +486,13 @@ async function loadEvolutions(){ return await loadEvolutionsH(); }
 function computeBattleLevel(trainer){
   if (!trainer || !Array.isArray(trainer.pokemons)) return 1;
   let max = 1;
-  for (const p of trainer.pokemons){
-    const raw = (p.lvl !== undefined ? p.lvl : (p.level !== undefined ? p.level : 1));
-    const lvl = parseInt(raw, 10) || 1;
-    if (lvl > max) max = lvl;
-  }
+      for (const p of trainer.pokemons) {
+        const raw = (p.lvl !== undefined ? p.lvl : (p.level !== undefined ? p.level : 1));
+        const lvl = parseInt(raw, 10) || 1;
+        if (lvl > max) {
+          max = lvl;
+        }
+      }
   // Cap player-facing battle level for Elite Four / Champion sequence
   // In Emerald Nuzlocke progression we treat Sidney -> Wallace as the late-game
   // block where player's Pokémon are limited to level 55 by default.
@@ -508,9 +510,11 @@ function computeBattleLevel(trainer){
 function computePlayerDefaultLevel(trainer){
   const enemyLevel = computeBattleLevel(trainer);
   try{
-    const eliteNames = new Set(['sidney','phoebe','glacia','drake','wallace']);
-    const tname = (trainer && trainer.name) ? String(trainer.name).toLowerCase() : '';
-    if (eliteNames.has(tname)) return 55;
+      const eliteNames = new Set(['sidney', 'phoebe', 'glacia', 'drake', 'wallace']);
+      const tname = (trainer && trainer.name) ? String(trainer.name).toLowerCase() : '';
+      if (eliteNames.has(tname)) {
+        return 55;
+      }
   }catch(e){ }
   return enemyLevel;
 }
@@ -1225,7 +1229,8 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
   const rolls = mults.map(mv => Math.max(1, Math.floor(trueBase * mv)));
   const min = Math.min(...rolls);
   const max = Math.max(...rolls);
-  const expected = rolls.reduce((a,b)=>a+b,0)/rolls.length;
+  const expectedRaw = rolls.reduce((a,b)=>a+b,0)/rolls.length;
+  const expected = Math.floor(expectedRaw);
   // assemble result and attach any applied ability notes
   const result = {
     rolls,
@@ -1253,6 +1258,26 @@ async function calcDamageRange(attackerToken, attackerLevel, defenderToken, defe
     badgesApplied: badgesApplied || [],
     appliedAbilities: appliedAbilityNotes.length ? appliedAbilityNotes : undefined,
   };
+  // Special-case: treat multi-hit move Bullet Seed as hitting the mid-count (3 hits)
+  try{
+    const mvTok = String(canonicalMove || '').toUpperCase();
+    if (/BULLET[_\s-]?SEED/.test(mvTok)){
+      const hits = 3; // use mid roll: 3 hits
+      // multiply each roll by hits and recompute aggregates
+      const multiRolls = (result.rolls || []).map(r => r * hits);
+      const multiMin = Math.min(...multiRolls);
+      const multiMax = Math.max(...multiRolls);
+      const multiExpectedRaw = multiRolls.reduce((a,b)=>a+b,0)/ (multiRolls.length || 1);
+      const multiExpected = Math.floor(multiExpectedRaw);
+      result.rolls = multiRolls;
+      result.min = multiMin;
+      result.max = multiMax;
+      result.expected = multiExpected;
+      result.multihit = { name: 'Bullet Seed', hits }; 
+      result.ohkoGuaranteed = multiMin >= defHP;
+      result.ohkoPossible = multiMax >= defHP;
+    }
+  }catch(e){}
   return result;
   return {
     rolls,
@@ -1386,39 +1411,45 @@ async function computeEnemyBestHit(enemyMon, ourMon, context = {}){
     try{
       const resolvedName = String(best.move).toUpperCase();
       if (/OVERHEAT/.test(resolvedName)){
+        // Simulate Overheat used on turn 1, then re-evaluate the enemy's best
+        // damaging move each subsequent turn with Sp. Atk penalties applied.
         const seq = [];
         const baseAttStats = enemyMon.statsFinal || enemyMon.stats || null;
         const ourHP = (ourMon && (ourMon.statsFinal && ourMon.statsFinal.hp)) ? ourMon.statsFinal.hp : (ourMon && ourMon.stats && ourMon.stats.hp) ? ourMon.stats.hp : 1;
         let remHP = ourHP;
-        let stagePenalty = 0; // 0 initially; after first use subtract 2, etc.
-        // helper for stage multiplier (handles negative stages)
+        let stagePenalty = 0; // starts at 0, Overheat applies -2 after use
         const stageToMult = (s)=>{ if (s >= 0) return Math.min(4.0, 1.0 + 0.5 * s); return 2.0 / (2 - s); };
-        // simulate up to 8 uses (cap when stage reaches -6)
-        for (let turn=1; turn<=8 && remHP>0; turn++){
-          // compute current att stats for this turn
-          let attStats = baseAttStats ? Object.assign({}, baseAttStats) : null;
-          if (attStats && typeof attStats.spa === 'number'){
-            const mult = stageToMult(stagePenalty);
-            attStats.spa = Math.max(1, Math.floor(attStats.spa * mult));
-          }
-          // compute damage for this turn using expected value
-          const dr = await calcDamageRange(
-            enemyMon.species,
-            enemyMon.lvl || enemyMon.level || 50,
-            ourMon.species,
-            ourMon.level || ourMon.level || 50,
-            best.move,
-            Object.assign({}, context, { attStats: attStats, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null, trainer: context && context.trainer ? context.trainer : null })
-          );
-          const dmg = (dr && typeof dr.expected === 'number') ? dr.expected : ((dr && typeof dr.max === 'number') ? dr.max : 0);
-          seq.push({ turn, expected: dmg, dr });
-          remHP = Math.max(0, remHP - dmg);
-          // apply Overheat self-drop after this use for subsequent turns
+        // Turn 1: force Overheat
+        try{
+          const attStats1 = baseAttStats ? Object.assign({}, baseAttStats) : null;
+          if (attStats1 && typeof attStats1.spa === 'number') attStats1.spa = Math.max(1, Math.floor(attStats1.spa * stageToMult(stagePenalty)));
+          const dr1 = await calcDamageRange(enemyMon.species, enemyMon.lvl || enemyMon.level || 50, ourMon.species, ourMon.level || ourMon.level || 50, best.move, Object.assign({}, context, { attStats: attStats1, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null, trainer: context && context.trainer ? context.trainer : null }));
+          const dmg1 = (dr1 && typeof dr1.expected === 'number') ? dr1.expected : ((dr1 && typeof dr1.max === 'number') ? dr1.max : 0);
+          seq.push({ turn: 1, expected: dmg1, dr: dr1, move: best.move });
+          remHP = Math.max(0, remHP - dmg1);
           stagePenalty = Math.max(-6, stagePenalty - 2);
+        }catch(e){ /* ignore */ }
+        // Turns 2..N: pick best damaging move each turn with updated SpA
+        for (let turn = 2; turn <= 8 && remHP > 0; turn++){
+          try{
+            const attStatsCur = baseAttStats ? Object.assign({}, baseAttStats) : null;
+            if (attStatsCur && typeof attStatsCur.spa === 'number') attStatsCur.spa = Math.max(1, Math.floor(attStatsCur.spa * stageToMult(stagePenalty)));
+            let bestThis = null; let bestDr = null;
+            for (const cand of damaging){
+              try{
+                const drc = await calcDamageRange(enemyMon.species, enemyMon.lvl || enemyMon.level || 50, ourMon.species, ourMon.level || ourMon.level || 50, cand.move, Object.assign({}, context, { attStats: attStatsCur, defStats: ourMon.statsFinal || ourMon.stats || null, attAbility: enemyMon.ability || null, defAbility: ourMon.ability || null, trainer: context && context.trainer ? context.trainer : null }));
+                const expected = (drc && typeof drc.expected === 'number') ? drc.expected : ((drc && typeof drc.max === 'number') ? drc.max : 0);
+                if (!bestThis || expected > bestThis.expected){ bestThis = { move: cand.move, expected }; bestDr = drc; }
+              }catch(e){ /* ignore per-candidate errors */ }
+            }
+            if (!bestThis) break;
+            seq.push({ turn, expected: bestThis.expected, dr: bestDr, move: bestThis.move });
+            remHP = Math.max(0, remHP - bestThis.expected);
+            if (String(bestThis.move).toUpperCase().indexOf('OVERHEAT') >= 0) stagePenalty = Math.max(-6, stagePenalty - 2);
+          }catch(e){ break; }
         }
         // compute hits to KO from sequence
         let cum = 0; let hitsToKO = Infinity; for (let i=0;i<seq.length;i++){ cum += seq[i].expected; if (cum >= ourHP){ hitsToKO = i+1; break; } }
-        // attach repeat simulation info to dr object for callers
         if (best.dr) best.dr.repeatSequence = seq;
         if (best.dr) best.dr.repeatHitsToKO = hitsToKO;
       }
@@ -3314,6 +3345,15 @@ document.addEventListener('DOMContentLoaded', async ()=>{
                         }
                         if (dr.badgesApplied && dr.badgesApplied.length) lines.push(`Badge multiplier: ${dr.badgeMultiplier.toFixed(3)} (applied: ${dr.badgesApplied.join(', ')})`);
                         lines.push(`True base after modifiers (floored): ${dr.trueBase}`);
+                        try{
+                          if (dr && dr.multihit && dr.multihit.hits){
+                            const desc = (dr.multihit && dr.multihit.name) ? `${dr.multihit.name}: ` : '';
+                            lines.push(`${desc}2-5 hits, assuming the mid roll of ${dr.multihit.hits} hits`);
+                          } else if (dr && dr.move && /BULLET[_\s-]?SEED/.test(String(dr.move).toUpperCase())){
+                            // fallback: if we detected Bullet Seed by token but multihit not annotated
+                            lines.push(`Bullet Seed: 2-5 hits, assuming the mid roll of 3 hits`);
+                          }
+                        }catch(e){}
                         lines.push(`Rolls (85..100): ${dr.rolls.join(', ')}`);
                         try{
                           const pct = (dr.defender && dr.defender.hp) ? (dr.expected / dr.defender.hp) * 100 : null;
